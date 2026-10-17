@@ -40,6 +40,7 @@ import open3d.visualization.gui as gui
 import scipy.spatial.transform.rotation as R
 import open3d.visualization.rendering as rendering
 from collections import namedtuple
+from functools import partial
 
 # Model files are addressed relative to the project root ("data/body_models/...").
 # A PyInstaller bundle unpacks them next to the code, so run from there and keep
@@ -961,26 +962,23 @@ class AppWindow:
 
         self._body_pose_comp.set_on_selection_changed(self._on_body_pose_comp)
         self._body_pose_joint.set_on_selection_changed(self._on_body_pose_joint)
-        self._body_pose_joint_x.set_on_value_changed(self._on_body_pose_joint_x)
-        self._body_pose_joint_y.set_on_value_changed(self._on_body_pose_joint_y)
-        self._body_pose_joint_z.set_on_value_changed(self._on_body_pose_joint_z)
+        for axis, slider in enumerate((self._body_pose_joint_x, self._body_pose_joint_y,
+                                       self._body_pose_joint_z)):
+            slider.set_on_value_changed(partial(self._on_body_pose_joint_axis, axis))
         self._body_pose_reset.set_on_clicked(self._on_body_pose_reset)
 
-        self._body_pose_joint_z.set_on_value_changed(self._on_body_pose_joint_z)
         self._body_pose_joint_val.set_on_value_changed(self._on_body_pose_joint_val)
 
         self._body_pose_ik.set_on_clicked(self._on_run_ik)
 
         # translation callbacks
-        self._trans_x.set_on_value_changed(self._on_trans_x)
-        self._trans_y.set_on_value_changed(self._on_trans_y)
-        self._trans_z.set_on_value_changed(self._on_trans_z)
+        for axis, slider in enumerate((self._trans_x, self._trans_y, self._trans_z)):
+            slider.set_on_value_changed(partial(self._on_trans, axis))
         self._trans_reset.set_on_clicked(self._on_trans_reset)
 
         # global rotation callbacks
-        self._rot_x.set_on_value_changed(self._on_rot_x)
-        self._rot_y.set_on_value_changed(self._on_rot_y)
-        self._rot_z.set_on_value_changed(self._on_rot_z)
+        for axis, slider in enumerate((self._rot_x, self._rot_y, self._rot_z)):
+            slider.set_on_value_changed(partial(self._on_rot, axis))
         self._rot_reset.set_on_clicked(self._on_rot_reset)
 
         # transparency callbacks
@@ -1797,9 +1795,7 @@ class AppWindow:
                 continue
             # MHR: hide parameters with min == max (not movable).
             if name == 'MHR':
-                gender = self._body_model_gender.selected_text
-                wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-                lo, hi = wrapper.parameter_limits['model_parameters'][i]
+                lo, hi = self._mhr_limits(i)
                 if lo == hi:
                     continue
             # SUPR/STAR/ANNY: hide the root (index 0); it has the global rotation sliders.
@@ -1840,18 +1836,24 @@ class AppWindow:
             self._body_beta_tensor[0, int(self._body_model_shape_comp.selected_text)-1] = float(val)
             self._body_beta_text.text = f",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].numpy().tolist())
         AppWindow.GROUND_OFFSET = None
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        self.load_body_model()
 
     def _on_body_exp_val(self, val):
         self._body_exp_tensor[0, int(self._body_model_exp_comp.selected_text)-1] = float(val)
         self._body_exp_text.text = f",".join(f'{x:.1f}' for x in self._body_exp_tensor[0].numpy().tolist())
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        self.load_body_model()
+
+    def _mhr_limits(self, index):
+        """(min, max) of one MHR model parameter for the selected MHR variant."""
+        gender = self._body_model_gender.selected_text
+        wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
+        return wrapper.parameter_limits['model_parameters'][index]
+
+    def _sync_mhr_value_slider(self, index):
+        lo, hi = self._mhr_limits(index)
+        self._body_pose_joint_val.set_limits(float(lo), float(hi))
+        self._body_pose_joint_val.double_value = float(
+            AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, index])
 
     def _on_body_pose_joint(self, name, index):
         self._sync_pose_joint_sliders()
@@ -1859,53 +1861,19 @@ class AppWindow:
             bone_index = int(name.split('-')[0])
             self._sync_anny_hierarchy_to_bone(bone_index)
         elif self._body_model.selected_text == "MHR":
-            ji = int(name.split('-')[0])
-            gender = self._body_model_gender.selected_text
-            wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-            lo, hi = wrapper.parameter_limits['model_parameters'][ji]
-            self._body_pose_joint_val.set_limits(float(lo), float(hi))
-            self._body_pose_joint_val.double_value = float(
-                AppWindow.POSE_PARAMS["MHR"]["model_parameters"][0, ji]
-            )
+            self._sync_mhr_value_slider(int(name.split('-')[0]))
 
-    def _on_body_pose_joint_x(self, val):
+    def _on_body_pose_joint_axis(self, axis, val):
+        """Per-joint Euler rotation slider for one axis, in degrees."""
         bm = self._body_model.selected_text
         bp = self._body_pose_comp.selected_text
         ji = int(self._body_pose_joint.selected_text.split('-')[0])
-        euler_angle = [val, self._body_pose_joint_y.int_value, self._body_pose_joint_z.int_value]
+        euler_angle = [self._body_pose_joint_x.int_value, self._body_pose_joint_y.int_value,
+                       self._body_pose_joint_z.int_value]
+        euler_angle[axis] = val
         axis_angle = euler_to_rotvec_for_body_model(bm, euler_angle)
         AppWindow.POSE_PARAMS[bm][bp][0, ji] = torch.from_numpy(axis_angle).float()
-
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
-
-    def _on_body_pose_joint_y(self, val):
-        bm = self._body_model.selected_text
-        bp = self._body_pose_comp.selected_text
-        ji = int(self._body_pose_joint.selected_text.split('-')[0])
-        euler_angle = [self._body_pose_joint_x.int_value, val, self._body_pose_joint_z.int_value]
-        axis_angle = euler_to_rotvec_for_body_model(bm, euler_angle)
-        AppWindow.POSE_PARAMS[bm][bp][0, ji] = torch.from_numpy(axis_angle).float()
-
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
-
-    def _on_body_pose_joint_z(self, val):
-        bm = self._body_model.selected_text
-        bp = self._body_pose_comp.selected_text
-        ji = int(self._body_pose_joint.selected_text.split('-')[0])
-        euler_angle = [self._body_pose_joint_x.int_value, self._body_pose_joint_y.int_value, val]
-        axis_angle = euler_to_rotvec_for_body_model(bm, euler_angle)
-        AppWindow.POSE_PARAMS[bm][bp][0, ji] = torch.from_numpy(axis_angle).float()
-
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        self.load_body_model()
 
     def _on_body_pose_joint_val(self, val):
         bm = self._body_model.selected_text
@@ -1920,10 +1888,7 @@ class AppWindow:
             elif ji in [3, 4, 5]:
                 AppWindow.POSE_PARAMS['MHR']['global_orient'][0, 0, ji - 3] = float(val)
 
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        self.load_body_model()
 
     def _on_body_model_shape_comp(self, name, index):
         if self._body_model.selected_text == 'ANNY':
@@ -1936,14 +1901,7 @@ class AppWindow:
 
     def _on_body_pose_comp(self, name, index):
         if self._body_model.selected_text == "MHR":
-            ji = int(name.split('-')[0])
-            gender = self._body_model_gender.selected_text
-            wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-            lo, hi = wrapper.parameter_limits['model_parameters'][ji]
-            self._body_pose_joint_val.set_limits(float(lo), float(hi))
-            self._body_pose_joint_val.double_value = float(
-                AppWindow.POSE_PARAMS["MHR"]["model_parameters"][0, ji]
-            )
+            self._sync_mhr_value_slider(int(name.split('-')[0]))
         self._body_pose_joint.clear_items()
         bm = self._body_model.selected_text
         joint_names = AppWindow.JOINT_NAMES[bm][name]
@@ -1953,9 +1911,7 @@ class AppWindow:
                 continue
             # MHR: hide parameters with min == max (not movable).
             if bm == 'MHR':
-                gender = self._body_model_gender.selected_text
-                wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-                lo, hi = wrapper.parameter_limits['model_parameters'][i]
+                lo, hi = self._mhr_limits(i)
                 if lo == hi:
                     continue
             # SUPR/STAR/ANNY: hide the root (index 0).
@@ -1977,10 +1933,7 @@ class AppWindow:
             self._body_beta_text.text = f",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].numpy().tolist())
             self._body_beta_val.double_value = 0.0
         AppWindow.GROUND_OFFSET = None
-        self.load_body_model(
-                self._body_model.selected_text,
-                gender=self._body_model_gender.selected_text,
-            )
+        self.load_body_model()
 
     def _on_anny_phenotype_comp(self, name, index):
         self._anny_phenotype_val.double_value = self._anny_phenotype_values[name]
@@ -1990,7 +1943,7 @@ class AppWindow:
         self._anny_phenotype_values[name] = float(val)
         if self._body_model.selected_text == 'ANNY':
             AppWindow.GROUND_OFFSET = None
-            self.load_body_model('ANNY', gender=self._body_model_gender.selected_text)
+            self.load_body_model()
 
     def _on_anny_reset_shape(self):
         self._anny_phenotype_values = dict(AppWindow.ANNY_PHENOTYPE_DEFAULTS)
@@ -1999,152 +1952,73 @@ class AppWindow:
         ]
         if self._body_model.selected_text == 'ANNY':
             AppWindow.GROUND_OFFSET = None
-            self.load_body_model('ANNY', gender=self._body_model_gender.selected_text)
+            self.load_body_model()
 
     def _on_body_exp_reset(self):
         self._body_exp_tensor = torch.zeros(1, 10)
         AppWindow.BODY_EXPS[self._body_model.selected_text] = self._body_exp_tensor
         self._body_exp_text.text = f",".join(f'{x:.1f}' for x in self._body_exp_tensor[0].numpy().tolist())
         self._body_exp_val.double_value = 0.0
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        self.load_body_model()
 
     def _on_body_pose_reset(self):
         bm = self._body_model.selected_text
         for key in AppWindow.POSE_PARAMS[bm]:
             AppWindow.POSE_PARAMS[bm][key] = torch.zeros_like(AppWindow.POSE_PARAMS[bm][key])
         self._sync_pose_joint_sliders()
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        self.load_body_model()
 
     # NEW GLOBAL TRANSLATION
-    def _on_trans_x(self, val):
-        bm = self._body_model.selected_text
-        if "trans" not in AppWindow.POSE_PARAMS[bm]:
+    def _on_trans(self, axis, val):
+        """Global translation slider for one axis (0=X, 1=Y, 2=Z)."""
+        params = AppWindow.POSE_PARAMS[self._body_model.selected_text]
+        if "trans" not in params:
             return
-        AppWindow.POSE_PARAMS[bm]["trans"][0, 0, 0] = val
-        
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
-
-    def _on_trans_y(self, val):
-        bm = self._body_model.selected_text
-        if "trans" not in AppWindow.POSE_PARAMS[bm]:
-            return
-        AppWindow.POSE_PARAMS[bm]["trans"][0, 0, 1] = val
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
-
-    def _on_trans_z(self, val):
-        bm = self._body_model.selected_text
-        if "trans" not in AppWindow.POSE_PARAMS[bm]:
-            return
-        AppWindow.POSE_PARAMS[bm]["trans"][0, 0, 2] = val
-        
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        params["trans"][0, 0, axis] = val
+        self.load_body_model()
 
     def _on_trans_reset(self):
-        bm = self._body_model.selected_text
-        if "trans" not in AppWindow.POSE_PARAMS[bm]:
+        params = AppWindow.POSE_PARAMS[self._body_model.selected_text]
+        if "trans" not in params:
             return
-        AppWindow.POSE_PARAMS[bm]["trans"] = torch.zeros_like(
-            AppWindow.POSE_PARAMS[bm]["trans"]
-        )
-        
-        self._trans_x.double_value = 0.0
-        self._trans_y.double_value = 0.0
-        self._trans_z.double_value = 0.0
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        params["trans"] = torch.zeros_like(params["trans"])
+        for slider in (self._trans_x, self._trans_y, self._trans_z):
+            slider.double_value = 0.0
+        self.load_body_model()
 
-    # NEW GLOBAL ROTATION
-    def _on_rot_x(self, val):
-        bm = self._body_model.selected_text
-        if "global_orient" in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm]["global_orient"][0, 0, 0] = val
-            if bm == 'MHR':
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, 3] = val
-        elif "pose" in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 0] = val
-        else:
-            return
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+    # ANNY's root rotation uses another axis order: viewer X, Y, Z map to
+    # pose components 0, 2 and -1.
+    ANNY_ROOT_AXES = ((0, 1.0), (2, 1.0), (1, -1.0))
 
-    def _on_rot_y(self, val):
+    def _set_global_rotation(self, axis, val):
+        """Write one global rotation component; False if the model has none."""
         bm = self._body_model.selected_text
-        if "global_orient" in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm]["global_orient"][0, 0, 1] = val
+        params = AppWindow.POSE_PARAMS[bm]
+        if "global_orient" in params:
+            params["global_orient"][0, 0, axis] = val
             if bm == 'MHR':
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, 4] = val
-        elif "pose" in AppWindow.POSE_PARAMS[bm]:
+                params['model_parameters'][0, 3 + axis] = val
+        elif "pose" in params:
             if bm == 'ANNY':
-                AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 2] = val
+                index, sign = self.ANNY_ROOT_AXES[axis]
+                params["pose"][0, 0, index] = sign * val
             else:
-                AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 1] = val
+                params["pose"][0, 0, axis] = val
         else:
-            return
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+            return False
+        return True
 
-    def _on_rot_z(self, val):
-        bm = self._body_model.selected_text
-        if "global_orient" in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm]["global_orient"][0, 0, 2] = val
-            if bm == 'MHR':
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, 5] = val
-        elif "pose" in AppWindow.POSE_PARAMS[bm]:
-            if bm == 'ANNY':
-                AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 1] = -val
-            else:
-                AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 2] = val
-        else:
-            return
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+    def _on_rot(self, axis, val):
+        """Global rotation slider for one axis, in radians."""
+        if self._set_global_rotation(axis, val):
+            self.load_body_model()
 
     def _on_rot_reset(self):
-        bm = self._body_model.selected_text
-        if "global_orient" in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm]["global_orient"] = torch.zeros_like(
-                AppWindow.POSE_PARAMS[bm]["global_orient"]
-            )
-            if bm == 'MHR':
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, 3] = 0.0
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, 4] = 0.0
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, 5] = 0.0
-        elif "pose" in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 0] = 0.0
-            AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 1] = 0.0
-            AppWindow.POSE_PARAMS[bm]["pose"][0, 0, 2] = 0.0
-        else:
+        if not all([self._set_global_rotation(axis, 0.0) for axis in range(3)]):
             return
-        self._rot_x.double_value = 0.0
-        self._rot_y.double_value = 0.0
-        self._rot_z.double_value = 0.0
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        for slider in (self._rot_x, self._rot_y, self._rot_z):
+            slider.double_value = 0.0
+        self.load_body_model()
 
     def _on_transparency(self, val):
         AppWindow.TRANSPARENCY[self._body_model.selected_text] = val
@@ -2315,7 +2189,7 @@ class AppWindow:
             self._update_label(f'IK could not solve this target: {error}')
             return
         AppWindow.POSE_PARAMS[bm] = result.parameters
-        self.load_body_model(bm, gender=self._body_model_gender.selected_text)
+        self.load_body_model()
         self._sync_pose_joint_sliders()
         self._sync_global_sliders()
         if result.initial_error <= 0.0005:
@@ -2347,13 +2221,7 @@ class AppWindow:
         ji = int(self._body_pose_joint.selected_text.split('-')[0])
 
         if bm == 'MHR':
-            gender = self._body_model_gender.selected_text
-            wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-            lo, hi = wrapper.parameter_limits['model_parameters'][ji]
-            self._body_pose_joint_val.set_limits(float(lo), float(hi))
-            self._body_pose_joint_val.double_value = float(
-                AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, ji]
-            )
+            self._sync_mhr_value_slider(ji)
             self._body_pose_joint_x.int_value = 0
             self._body_pose_joint_y.int_value = 0
             self._body_pose_joint_z.int_value = 0

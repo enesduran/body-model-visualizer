@@ -127,7 +127,7 @@ def check_models(window):
             if name == 'MHR':
                 window._on_body_pose_joint_val(0.01)
             else:
-                window._on_body_pose_joint_x(5)
+                window._on_body_pose_joint_axis(0, 5)
             check_number_edits(window)
             assert window._scene.scene.has_geometry('__skeleton__')
             assert window._skeleton_button.is_on and window._labels_button.is_on

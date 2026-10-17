@@ -136,7 +136,8 @@ class SceneTests(unittest.TestCase):
             self.assertIsNone(AppWindow.GROUND_OFFSET)
             self.assertEqual(self.window._anny_phenotype_values['height'], 0.7)
             self.window._on_anny_reset_shape()
-            self.assertEqual(calls, [(('ANNY',), {'gender': 'default'})] * 2)
+            # Reloads the current selection (ANNY/default) rather than a hard-coded variant.
+            self.assertEqual(calls, [((), {})] * 2)
         finally:
             AppWindow.GROUND_OFFSET = previous_ground
 
