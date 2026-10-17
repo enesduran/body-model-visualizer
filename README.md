@@ -202,12 +202,19 @@ parameters for the shared solver in `inverse_kinematics.py`.
 
 IK supports SMPL, SMPL-X, MANO, FLAME, SUPR, STAR, ANNY, and MHR:
 
-1. Enable **Drag joints (IK)** in the Pose tab; this also shows the skeleton.
+1. Enable **Drag joints** on the viewport toolbar; this also shows the skeleton.
 2. Click and drag a joint marker, then release to fit the pose. On a trackpad,
    press and hold with one finger while moving it. Turn off Drag joints to orbit
    the camera. Holding **Q** while dragging is also supported when the viewport has keyboard focus.
 3. Alternatively, select a joint, use **1/2**, **3/4**, or **5/6** to adjust its
-   target along X, Y, or Z, and click **Run IK** in the Pose tab.
+   target along X, Y, or Z, and click **Run IK** in the Pose section.
+
+The sidebar has two tabs. **Model** holds model selection plus collapsible
+Shape, Expression, Pose, and Global transform sections; **Display** holds
+transparency, lighting, and material controls. Every parameter slider has a
+number field next to it for exact values. The toolbar over the viewport
+offers Reset view, Front/Side/Top camera presets, and the Skeleton, Labels,
+and Drag joints toggles.
 
 IK optimizes joint/landmark positions while holding body shape, facial
 expression, root rotation, and translation fixed. Other points act as soft

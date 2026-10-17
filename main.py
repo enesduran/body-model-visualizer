@@ -63,6 +63,81 @@ from inverse_kinematics import solve_ik
 isMacOS = (platform.system() == "Darwin")
 
 
+class SliderWithEdit:
+    """A slider paired with a number field that shows and edits the same value."""
+
+    def __init__(self, slider_type, em, decimals=3):
+        self._is_int = slider_type == gui.Slider.INT
+        self.slider = gui.Slider(slider_type)
+        self.edit = gui.NumberEdit(
+            gui.NumberEdit.INT if self._is_int else gui.NumberEdit.DOUBLE)
+        if not self._is_int:
+            self.edit.decimal_precision = decimals
+        self.edit.set_preferred_width(int(4.5 * em))
+        self.widget = gui.Horiz(0.25 * em)
+        self.widget.add_child(self.slider)
+        self.widget.add_child(self.edit)
+        self._callback = None
+        self.slider.set_on_value_changed(self._on_slider)
+        self.edit.set_on_value_changed(self._on_edit)
+
+    def _on_slider(self, value):
+        self._show(value)
+        if self._callback is not None:
+            self._callback(value)
+
+    def _on_edit(self, value):
+        value = min(max(value, self.slider.get_minimum_value),
+                    self.slider.get_maximum_value)
+        if self._is_int:
+            value = int(round(value))
+            self.slider.int_value = value
+        else:
+            self.slider.double_value = float(value)
+        self._show(value)
+        if self._callback is not None:
+            self._callback(value)
+
+    def _show(self, value):
+        if self._is_int:
+            self.edit.int_value = int(round(value))
+        else:
+            self.edit.double_value = float(value)
+
+    def set_on_value_changed(self, callback):
+        self._callback = callback
+
+    def set_limits(self, low, high):
+        self.slider.set_limits(low, high)
+        self.edit.set_limits(low, high)
+
+    @property
+    def double_value(self):
+        return self.slider.double_value
+
+    @double_value.setter
+    def double_value(self, value):
+        self.slider.double_value = float(value)
+        self._show(value)
+
+    @property
+    def int_value(self):
+        return self.slider.int_value
+
+    @int_value.setter
+    def int_value(self, value):
+        self.slider.int_value = int(value)
+        self._show(value)
+
+    @property
+    def visible(self):
+        return self.widget.visible
+
+    @visible.setter
+    def visible(self, value):
+        self.widget.visible = value
+
+
 def enable_chumpy_compatibility():
     """Keep legacy SMPL pickle files loadable on Python 3.11+ and NumPy 2."""
     if not hasattr(inspect, "getargspec"):
@@ -539,18 +614,23 @@ class AppWindow:
         self._settings_panel = gui.TabControl()
         self.model_settings = gui.ScrollableVert(
             0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
-        self._pose_settings = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
         self._display_settings = gui.ScrollableVert(
             0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
         self._settings_panel.add_tab("Model", self.model_settings)
-        self._settings_panel.add_tab("Pose", self._pose_settings)
         self._settings_panel.add_tab("Display", self._display_settings)
         self._settings_panel.set_on_selected_tab_changed(
             lambda index: self.window.set_needs_layout())
-        self._transform_settings = gui.CollapsableVert(
-            "Global transform", 0.25 * em, gui.Margins(0, 0, 0, 0))
-        self._transform_settings.set_is_open(False)
+
+        def section(title, is_open=True):
+            widget = gui.CollapsableVert(title, 0.25 * em, gui.Margins(0, 0, 0, 0))
+            widget.set_is_open(is_open)
+            return widget
+
+        # Model tab: selection, then shape, expression, pose and placement.
+        self._shape_section = section("Shape")
+        self._expression_section = section("Expression")
+        self._pose_settings = section("Pose")
+        self._transform_settings = section("Global transform", is_open=False)
 
         # Create a collapsable vertical widget, which takes up enough vertical
         # space for all its children when open, but only enough for text when
@@ -741,32 +821,32 @@ class AppWindow:
         for i in range(AppWindow.BODY_MODEL_N_BETAS[AppWindow.BODY_MODEL_NAMES[0]]):
             self._body_model_shape_comp.add_item(f'{i+1:02d}')
 
-        self._body_beta_val = gui.Slider(gui.Slider.DOUBLE)
+        self._body_beta_val = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
         self._body_beta_val.set_limits(-5.0, 5.0)
         self._body_beta_tensor = torch.zeros(1, 10)
         self._anny_phenotype_values = dict(AppWindow.ANNY_PHENOTYPE_DEFAULTS) #??
-        self._body_beta_reset = gui.Button("Reset betas")
+        self._body_beta_reset = gui.Button("Reset shape")
 
         # new global translation gui slider
-        self._trans_x = gui.Slider(gui.Slider.DOUBLE)
+        self._trans_x = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._trans_x.set_limits(-5.0, 5.0)
-        self._trans_y = gui.Slider(gui.Slider.DOUBLE)
+        self._trans_y = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._trans_y.set_limits(-5.0, 5.0)
-        self._trans_z = gui.Slider(gui.Slider.DOUBLE)
+        self._trans_z = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._trans_z.set_limits(-5.0, 5.0)
         self._trans_reset = gui.Button("Reset translation")
 
         # new global rotation gui slider
-        self._rot_x = gui.Slider(gui.Slider.DOUBLE)
+        self._rot_x = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._rot_x.set_limits(-5.0, 5.0)
-        self._rot_y = gui.Slider(gui.Slider.DOUBLE)
+        self._rot_y = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._rot_y.set_limits(-5.0, 5.0)
-        self._rot_z = gui.Slider(gui.Slider.DOUBLE)
+        self._rot_z = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._rot_z.set_limits(-5.0, 5.0)
         self._rot_reset = gui.Button("Reset rotation")
 
         # new transparency slider
-        self._transparency = gui.Slider(gui.Slider.DOUBLE)
+        self._transparency = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
         self._transparency.set_limits(0.0, 1.0)
         self._transparency.double_value = 0.0
         self._transparency_reset = gui.Button("Reset transparency")
@@ -782,7 +862,7 @@ class AppWindow:
         for i in range(10):
             self._body_model_exp_comp.add_item(f'{i + 1:02d}')
 
-        self._body_exp_val = gui.Slider(gui.Slider.DOUBLE)
+        self._body_exp_val = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
         self._body_exp_val.set_limits(-5.0, 5.0)
         self._body_exp_tensor = torch.zeros(1, 10)
         self._body_exp_reset = gui.Button("Reset expression")
@@ -799,18 +879,18 @@ class AppWindow:
             self._body_pose_comp.add_item(k)
 
         self._body_pose_comp_grid = gui.VGrid(2, 0.25 * em)
-        self._body_pose_comp_label = gui.Label("Pose comp:")
+        self._body_pose_comp_label = gui.Label("Pose group")
         self._body_pose_joint = gui.Combobox()
 
-        self._body_pose_joint_x = gui.Slider(gui.Slider.INT)
+        self._body_pose_joint_x = SliderWithEdit(gui.Slider.INT, em)
         self._body_pose_joint_x.set_limits(-180, 180)
-        self._body_pose_joint_y = gui.Slider(gui.Slider.INT)
+        self._body_pose_joint_y = SliderWithEdit(gui.Slider.INT, em)
         self._body_pose_joint_y.set_limits(-180, 180)
-        self._body_pose_joint_z = gui.Slider(gui.Slider.INT)
+        self._body_pose_joint_z = SliderWithEdit(gui.Slider.INT, em)
         self._body_pose_joint_z.set_limits(-180, 180)
 
         # new slider for MHR
-        self._body_pose_joint_val = gui.Slider(gui.Slider.DOUBLE)
+        self._body_pose_joint_val = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._body_pose_joint_val.set_limits(-1.0, 1.0)
 
         self._body_pose_reset = gui.Button("Reset pose")
@@ -943,35 +1023,34 @@ class AppWindow:
         self._scene.set_on_key(self._on_key_widget)
 
         grid = gui.VGrid(2, 0.25 * em)
-        grid.add_child(gui.Label("Body Model"))
+        grid.add_child(gui.Label("Body model"))
         grid.add_child(self._body_model)
         grid.add_child(gui.Label("Gender"))
         grid.add_child(self._body_model_gender)
-        grid.add_child(gui.Label("Beta Component"))
-        grid.add_child(self._body_model_shape_comp)
-        grid.add_child(gui.Label("Beta val:"))
-        grid.add_child(self._body_beta_val)
         self.model_settings.add_child(grid)
 
-        # h = gui.Horiz(0.25 * em)  # row 1
-        # h.add_child(self._body_beta_text)
-        # self.model_settings.add_child(h)
+        grid = gui.VGrid(2, 0.25 * em)
+        grid.add_child(gui.Label("Component"))
+        grid.add_child(self._body_model_shape_comp)
+        grid.add_child(gui.Label("Value"))
+        grid.add_child(self._body_beta_val.widget)
+        self._shape_section.add_child(grid)
 
-        h = gui.Horiz(0.25 * em)  # row 2
+        h = gui.Horiz(0.25 * em)
         h.add_child(self._body_beta_reset)
-        self.model_settings.add_child(h)
+        self._shape_section.add_child(h)
 
         # new global translation UI
         h = gui.Horiz(0.25 * em)
-        h.add_child(gui.Label("Global Translation"))
+        h.add_child(gui.Label("Translation (m)"))
         self._transform_settings.add_child(h)
         grid = gui.VGrid(2, 0.25 * em)
         grid.add_child(gui.Label("Translate X"))
-        grid.add_child(self._trans_x)
+        grid.add_child(self._trans_x.widget)
         grid.add_child(gui.Label("Translate Y"))
-        grid.add_child(self._trans_y)
+        grid.add_child(self._trans_y.widget)
         grid.add_child(gui.Label("Translate Z"))
-        grid.add_child(self._trans_z)
+        grid.add_child(self._trans_z.widget)
         self._transform_settings.add_child(grid)
         h = gui.Horiz(0.25 * em)
         h.add_child(self._trans_reset)
@@ -979,49 +1058,44 @@ class AppWindow:
 
         # new global rotation UI
         self._global_rotation_header_row = gui.Horiz(0.25 * em)
-        self._global_rotation_header_row.add_child(gui.Label("Global Rotation"))
+        self._global_rotation_header_row.add_child(gui.Label("Rotation (rad)"))
         self._transform_settings.add_child(self._global_rotation_header_row)
         self._global_rotation_grid = gui.VGrid(2, 0.25 * em)
         self._global_rotation_grid.add_child(gui.Label("Rotate X"))
-        self._global_rotation_grid.add_child(self._rot_x)
+        self._global_rotation_grid.add_child(self._rot_x.widget)
         self._global_rotation_grid.add_child(gui.Label("Rotate Y"))
-        self._global_rotation_grid.add_child(self._rot_y)
+        self._global_rotation_grid.add_child(self._rot_y.widget)
         self._global_rotation_grid.add_child(gui.Label("Rotate Z"))
-        self._global_rotation_grid.add_child(self._rot_z)
+        self._global_rotation_grid.add_child(self._rot_z.widget)
         self._transform_settings.add_child(self._global_rotation_grid)
         self._global_rotation_reset_row = gui.Horiz(0.25 * em)
         self._global_rotation_reset_row.add_child(self._rot_reset)
         self._transform_settings.add_child(self._global_rotation_reset_row)
 
         self._expression_grid = gui.VGrid(2, 0.25 * em)
-        self._expression_grid.add_child(gui.Label("Exp Component"))
+        self._expression_grid.add_child(gui.Label("Component"))
         self._expression_grid.add_child(self._body_model_exp_comp)
-        self._expression_grid.add_child(gui.Label("Exp val:"))
-        self._expression_grid.add_child(self._body_exp_val)
-        self.model_settings.add_child(self._expression_grid)
+        self._expression_grid.add_child(gui.Label("Value"))
+        self._expression_grid.add_child(self._body_exp_val.widget)
+        self._expression_section.add_child(self._expression_grid)
 
         # Reset expression Button
         self._expression_reset_row = gui.Horiz(0.25 * em)
         self._expression_reset_row.add_child(self._body_exp_reset)
-        self.model_settings.add_child(self._expression_reset_row)
+        self._expression_section.add_child(self._expression_reset_row)
 
-        self.model_settings.add_fixed(0.5 * em)
+        self.model_settings.add_child(self._shape_section)
+        self.model_settings.add_child(self._expression_section)
+        self.model_settings.add_child(self._pose_settings)
+        self.model_settings.add_child(self._transform_settings)
 
-        # show skeleton checkbox
-        h = gui.Horiz(0.25 * em)  # row 2
-        h.add_child(self._show_joints)
-        h.add_child(self._show_joint_labels)
-        self._display_settings.add_child(h)
-
-        # abstand hinzufuegen
-        self._display_settings.add_fixed(em)
+        # Skeleton, labels, drag mode and camera reset live on the viewport
+        # toolbar; their checkboxes remain as hidden state holders.
 
         # transparency slider
-        h = gui.Horiz(0.25 * em)
-        self._display_settings.add_child(h)
         grid = gui.VGrid(2, 0.25 * em)
         grid.add_child(gui.Label("Transparency"))
-        grid.add_child(self._transparency)
+        grid.add_child(self._transparency.widget)
         self._display_settings.add_child(grid)
 
         self._display_settings.add_fixed(0.5 * em)
@@ -1032,32 +1106,24 @@ class AppWindow:
 
         self._display_settings.add_fixed(em)
 
-        # camera reset button
-        h = gui.Horiz(0.25 * em)
-        h.add_child(self._camera_reset)
-        self._display_settings.add_child(h)
-
-        # abstand hinzufuegen
-        self._display_settings.add_fixed(em)
-
         self._body_pose_comp_grid.add_child(self._body_pose_comp_label)
         self._body_pose_comp_grid.add_child(self._body_pose_comp)
         self._pose_settings.add_child(self._body_pose_comp_grid)
 
         self._joint_grid = gui.VGrid(2, 0.25 * em)
-        self._body_pose_joint_label = gui.Label("Joint id:")
+        self._body_pose_joint_label = gui.Label("Joint")
         self._joint_grid.add_child(self._body_pose_joint_label)
         self._joint_grid.add_child(self._body_pose_joint)
         self._pose_settings.add_child(self._joint_grid)
 
         self._anny_grid = gui.VGrid(2, 0.25 * em)
-        self._anny_region_label = gui.Label("Anny Region")
+        self._anny_region_label = gui.Label("Region")
         self._anny_grid.add_child(self._anny_region_label)
         self._anny_grid.add_child(self._anny_region)
-        self._anny_group_label = gui.Label("Anny Group")
+        self._anny_group_label = gui.Label("Group")
         self._anny_grid.add_child(self._anny_group_label)
         self._anny_grid.add_child(self._anny_group)
-        self._anny_bone_label = gui.Label("Anny Bone")
+        self._anny_bone_label = gui.Label("Bone")
         self._anny_grid.add_child(self._anny_bone_label)
         self._anny_grid.add_child(self._anny_bone)
         self._pose_settings.add_child(self._anny_grid)
@@ -1065,20 +1131,20 @@ class AppWindow:
         self._pose_settings.add_fixed(0.5 * em)
 
         self._rot_grid = gui.VGrid(2, 0.25 * em)
-        self._rot_x_label = gui.Label("rot_x")
+        self._rot_x_label = gui.Label("Rotation X (deg)")
         self._rot_grid.add_child(self._rot_x_label)
-        self._rot_grid.add_child(self._body_pose_joint_x)
-        self._rot_y_label = gui.Label("rot_y")
+        self._rot_grid.add_child(self._body_pose_joint_x.widget)
+        self._rot_y_label = gui.Label("Rotation Y (deg)")
         self._rot_grid.add_child(self._rot_y_label)
-        self._rot_grid.add_child(self._body_pose_joint_y)
-        self._rot_z_label = gui.Label("rot_z")
+        self._rot_grid.add_child(self._body_pose_joint_y.widget)
+        self._rot_z_label = gui.Label("Rotation Z (deg)")
         self._rot_grid.add_child(self._rot_z_label)
-        self._rot_grid.add_child(self._body_pose_joint_z)
+        self._rot_grid.add_child(self._body_pose_joint_z.widget)
         self._pose_settings.add_child(self._rot_grid)
 
         self._mhr_grid = gui.VGrid(2, 0.25 * em)
-        self._mhr_grid.add_child(gui.Label("value"))
-        self._mhr_grid.add_child(self._body_pose_joint_val)
+        self._mhr_grid.add_child(gui.Label("Value"))
+        self._mhr_grid.add_child(self._body_pose_joint_val.widget)
         self._pose_settings.add_child(self._mhr_grid)
 
         self._pose_settings.add_fixed(0.5 * em)
@@ -1093,14 +1159,48 @@ class AppWindow:
         # h.add_child(gui.VectorEdit())
         self._pose_settings.add_child(h)
 
-        self._pose_settings.add_child(self._drag_joints)
-        self._pose_settings.add_child(gui.Label("Enable Drag joints, then drag a marker."))
-        self._pose_settings.add_child(self._transform_settings)
+        self._pose_settings.add_child(gui.Label("Toolbar: Drag joints, then drag a marker; release to solve IK."))
         self._display_settings.add_child(view_ctrls)
         self._display_settings.add_child(material_settings)
         self._display_settings.add_child(advanced)
         self._set_model_specific_ui_visibility(self._body_model.selected_text)
 
+
+        # Viewport toolbar: camera presets and the display toggles people reach
+        # for most often, floating over the top-left corner of the 3D view.
+        self._toolbar = gui.Horiz(
+            0.25 * em, gui.Margins(0.5 * em, 0.25 * em, 0.5 * em, 0.25 * em))
+        self._toolbar.background_color = gui.Color(0.12, 0.12, 0.12, 0.75)
+
+        def tool_button(text, on_clicked, toggleable=False, tooltip=""):
+            button = gui.Button(text)
+            button.horizontal_padding_em = 0.5
+            button.vertical_padding_em = 0.1
+            button.toggleable = toggleable
+            button.tooltip = tooltip
+            button.set_on_clicked(on_clicked)
+            self._toolbar.add_child(button)
+            return button
+
+        tool_button("Reset view", self._on_camera_reset, tooltip="Frame the model")
+        tool_button("Front", lambda: self._look_from([0., 0., 1.]))
+        tool_button("Side", lambda: self._look_from([1., 0., 0.]))
+        tool_button("Top", lambda: self._look_from([0., 1., 0.]))
+        self._toolbar.add_fixed(0.5 * em)
+        self._skeleton_button = tool_button(
+            "Skeleton", lambda: self._set_skeleton_visible(self._skeleton_button.is_on),
+            toggleable=True, tooltip="Show joints and bones")
+        self._labels_button = tool_button(
+            "Labels", lambda: self._set_joint_labels_visible(self._labels_button.is_on),
+            toggleable=True, tooltip="Show joint names")
+        self._drag_button = tool_button(
+            "Drag joints", lambda: self._set_drag_joints(self._drag_button.is_on),
+            toggleable=True, tooltip="Drag a joint marker to pose with IK")
+        self._toolbar_state = [
+            (self._skeleton_button, self._show_joints),
+            (self._labels_button, self._show_joint_labels),
+            (self._drag_button, self._drag_joints),
+        ]
 
         # Info panel
         self.info = gui.Label("")
@@ -1109,6 +1209,7 @@ class AppWindow:
         # Reserve a separate viewport and full-height tabbed sidebar.
         w.set_on_layout(self._on_layout)
         w.add_child(self._scene)
+        w.add_child(self._toolbar)
         w.add_child(self._settings_panel)
         w.add_child(self.info)
         # w.add_child(self.joint_label_3d)
@@ -1219,11 +1320,19 @@ class AppWindow:
 
     def _on_layout(self, layout_context):
         r = self.window.content_rect
-        width = min(22 * layout_context.theme.font_size, int(r.width * 0.45))
+        em = layout_context.theme.font_size
+        width = min(26 * em, int(r.width * 0.45))
         sidebar_width = width if self._settings_panel.visible else 0
         self._scene.frame = gui.Rect(r.x, r.y, r.width - sidebar_width, r.height)
         self._settings_panel.frame = gui.Rect(
             r.get_right() - width, r.y, width, r.height)
+
+        pref = self._toolbar.calc_preferred_size(layout_context,
+                                                 gui.Widget.Constraints())
+        margin = int(0.5 * em)
+        self._toolbar.frame = gui.Rect(
+            self._scene.frame.x + margin, self._scene.frame.y + margin,
+            min(pref.width, max(self._scene.frame.width - 2 * margin, 0)), pref.height)
 
         pref = self.info.calc_preferred_size(layout_context,
                                              gui.Widget.Constraints())
@@ -1288,6 +1397,7 @@ class AppWindow:
                 self.joint_labels_3d_list.append(
                     self._scene.add_3d_label(position, name)
                 )
+        self._sync_toolbar()
 
     def _skeleton_edges(self, num_joints):
         """Use the active model's kinematic tree, excluding extra landmarks."""
@@ -1479,6 +1589,8 @@ class AppWindow:
         is_anny = body_model_name == "ANNY"
         # Nur SMPLX, FLAME und MHR haben Facial Expression
         has_expression = body_model_name in ("SMPLX", "FLAME", "MHR")
+        if hasattr(self, "_expression_section"):
+            self._expression_section.visible = has_expression
         if hasattr(self, "_expression_grid"):
             self._expression_grid.visible = has_expression
         if hasattr(self, "_expression_reset_row"):
@@ -1743,10 +1855,7 @@ class AppWindow:
         need_comp = name in ('SMPLX', 'FLAME')
         self._body_pose_comp_grid.visible = need_comp
 
-        if name == 'SMPLX':
-            self._body_pose_comp_label.text = 'SMPLX region:'
-        elif name == 'FLAME':
-            self._body_pose_comp_label.text = 'FLAME region:'
+        self._body_pose_comp_label.text = 'Pose group'
 
     def _on_body_model_gender(self, name, index):
         logger.info(f"Changing {self._body_model.selected_text} body model gender to {name}-{index}")
@@ -2090,8 +2199,37 @@ class AppWindow:
         self._transparency.double_value = 0.0
 
     def _on_camera_reset(self):
-        if AppWindow.CAM_FIRST is not None:
+        if AppWindow.CAM_BOUNDS is not None:
             self._scene.setup_camera(60, AppWindow.CAM_BOUNDS, AppWindow.CAM_CENTER)
+
+    def _look_from(self, direction):
+        """Place the camera on the given side of the model, looking at its center."""
+        if AppWindow.CAM_BOUNDS is None:
+            return
+        center = np.asarray(AppWindow.CAM_CENTER, dtype=np.float32)
+        direction = np.asarray(direction, dtype=np.float32)
+        distance = 1.8 * float(np.max(AppWindow.CAM_BOUNDS.get_extent()))
+        eye = center + direction * distance
+        up = np.array([0., 0., -1.], dtype=np.float32) if abs(direction[1]) > 0.9 \
+            else np.array([0., 1., 0.], dtype=np.float32)
+        self._scene.look_at(center, eye, up)
+
+    def _set_skeleton_visible(self, show):
+        self._show_joints.checked = show
+        self._on_show_joints(show)
+
+    def _set_joint_labels_visible(self, show):
+        self._show_joint_labels.checked = show
+        self._on_show_joint_labels(show)
+
+    def _set_drag_joints(self, enabled):
+        self._drag_joints.checked = enabled
+        self._on_drag_joints(enabled)
+
+    def _sync_toolbar(self):
+        """Mirror the sidebar checkboxes on the toolbar toggles."""
+        for button, checkbox in getattr(self, '_toolbar_state', ()):
+            button.is_on = checkbox.checked
 
     def _on_drag_joints(self, enabled):
         if AppWindow.IS_DRAGGING:
@@ -2102,6 +2240,7 @@ class AppWindow:
             self._on_show_joints(True)
         self._update_label("Drag a joint marker; release to solve IK." if enabled
                            else "Camera controls restored.")
+        self._sync_toolbar()
 
     def _finish_joint_drag(self):
         AppWindow.IS_DRAGGING = False
@@ -2450,13 +2589,13 @@ class AppWindow:
         # Add the text
         dlg_layout = gui.Vert(em, gui.Margins(em, em, em, em))
         dlg_layout.add_child(gui.Label("Body Model Visualizer - Help"))
-        dlg_layout.add_child(gui.Label("Select / drag: enable Drag joints in Pose, or hold Q"))
+        dlg_layout.add_child(gui.Label("Select / drag: enable Drag joints on the toolbar, or hold Q"))
         dlg_layout.add_child(gui.Label("Release the mouse or Q to solve IK"))
         dlg_layout.add_child(gui.Label("-- Move selected Joint --"))
         dlg_layout.add_child(gui.Label("Move -x/+x: 1/2"))
         dlg_layout.add_child(gui.Label("Move -y/+y: 3/4"))
         dlg_layout.add_child(gui.Label("Move -z/+z: 5/6"))
-        dlg_layout.add_child(gui.Label("After key adjustments, click Run IK in Pose"))
+        dlg_layout.add_child(gui.Label("After key adjustments, click Run IK in Model > Pose"))
         # Add the Ok button. We need to define a callback function to handle
         # the click.
         ok = gui.Button("OK")
