@@ -7,7 +7,8 @@ dependencies:
   - numpy
   - scipy
   - pytorch
-  - pymomentum
+  # older builds (e.g. 0.1.70) don't pin ezc3d and fail to import with ezc3d 1.7.x
+  - pymomentum>=0.1.114
   - chumpy
   - trimesh
   - ezc3d
@@ -22,7 +23,8 @@ dependencies:
       - joblib
       - loguru
       - matplotlib
-      - open3d
+      # 0.20 macOS wheels need Homebrew's libusb
+      - open3d==0.19.0
       - pandas
       - plotly
       - pydantic
@@ -34,3 +36,5 @@ dependencies:
       - smplx
       - toml
       - tqdm
+      - anny==0.3.1
+      - mhr==1.0.1
