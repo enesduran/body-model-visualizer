@@ -1,24 +1,32 @@
-from loguru import logger
+"""Registry of body model adapters; each one is optional at import time."""
+import importlib
 from functools import partial
 
-from Wrapper.ANNY_WRAPPER import ANNY_WRAPPER
-from Wrapper.STAR_WRAPPER import STAR_WRAPPER
-from Wrapper.SUPR_WRAPPER import SUPR_WRAPPER
-from Wrapper.SMPL_WRAPPER import SMPL_WRAPPER
+from loguru import logger
 
-WRAPPER_CLASSES = {
-    **{name: partial(SMPL_WRAPPER, name) for name in SMPL_WRAPPER.MODEL_CLASSES},
-    'SUPR': SUPR_WRAPPER,
-    'ANNY': ANNY_WRAPPER,
-    'STAR': STAR_WRAPPER,
-}
+WRAPPER_CLASSES = {}
 
-try:
-    from Wrapper.MHR_WRAPPER import MHR_WRAPPER
-# ImportError statt nur ModuleNotFoundError: auch ein installiertes, aber
-# kaputtes mhr/pymomentum (z.B. ABI-Fehler) soll MHR nur überspringen
-except ImportError as e:
-    logger.warning(f'MHR unavailable, skipping: {e}')
-    MHR_WRAPPER = None
-else:
-    WRAPPER_CLASSES['MHR'] = MHR_WRAPPER
+
+def _register(module_name, class_name, model_names=None):
+    """Import one wrapper; a missing or broken dependency only drops its models.
+
+    ImportError rather than ModuleNotFoundError: an installed but broken
+    package (e.g. an mhr/pymomentum ABI mismatch) must skip the model too.
+    """
+    try:
+        wrapper = getattr(importlib.import_module(module_name), class_name)
+    except ImportError as error:
+        logger.warning(f'{class_name} unavailable, skipping: {error}')
+        return
+    if model_names is None:
+        WRAPPER_CLASSES[class_name.split('_')[0]] = wrapper
+    else:
+        for name in model_names:
+            WRAPPER_CLASSES[name] = partial(wrapper, name)
+
+
+_register('Wrapper.SMPL_WRAPPER', 'SMPL_WRAPPER', ('SMPL', 'SMPLX', 'MANO', 'FLAME'))
+_register('Wrapper.SUPR_WRAPPER', 'SUPR_WRAPPER')
+_register('Wrapper.STAR_WRAPPER', 'STAR_WRAPPER')
+_register('Wrapper.ANNY_WRAPPER', 'ANNY_WRAPPER')
+_register('Wrapper.MHR_WRAPPER', 'MHR_WRAPPER')

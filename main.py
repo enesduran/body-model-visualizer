@@ -27,7 +27,6 @@
 # ----------------------------------------------------------------------------
 import os
 import sys
-import copy
 import glob
 import inspect
 import torch
@@ -40,15 +39,17 @@ from loguru import logger
 import open3d.visualization.gui as gui
 import scipy.spatial.transform.rotation as R
 import open3d.visualization.rendering as rendering
-import roma
 from collections import namedtuple
-#from anny.src.anny.skinning.warp_skinning import grad_or_none
 
-# import anny (es soll die lokale version benutzen)
-ANNY_SRC_DIR = os.path.join(os.path.dirname(__file__), "anny", "src")
-if os.path.isdir(ANNY_SRC_DIR) and ANNY_SRC_DIR not in sys.path:
-    sys.path.insert(0, ANNY_SRC_DIR)
-from anny.models.full_model import create_model
+# Model files are addressed relative to the project root ("data/body_models/...").
+# A PyInstaller bundle unpacks them next to the code, so run from there and keep
+# a log file, since a windowed app has no terminal.
+if getattr(sys, 'frozen', False):
+    os.chdir(getattr(sys, '_MEIPASS', os.path.dirname(sys.executable)))
+    logger.add(os.path.join(os.path.expanduser('~'), 'Library', 'Logs',
+                            'BodyModelVisualizer.log')
+               if platform.system() == 'Darwin' else 'BodyModelVisualizer.log',
+               rotation='5 MB', retention=3)
 
 from utils import (
     get_checkerboard_plane,
@@ -1670,7 +1671,9 @@ class AppWindow:
 
     def _build_anny_bone_hierarchy(self):
         hierarchy = {region: {} for region in AppWindow.ANNY_REGION_ORDER}
-        for bone_index, bone_name in enumerate(AppWindow.JOINT_NAMES["ANNY"]["pose"]):
+        # ANNY may be absent (not installed, or excluded from a trimmed build).
+        bone_names = AppWindow.JOINT_NAMES.get("ANNY", {}).get("pose", [])
+        for bone_index, bone_name in enumerate(bone_names):
             # Root (Index 0) ausblenden - wird über Global Rotation gesteuert
             if bone_index == 0:
                 continue
@@ -2635,22 +2638,45 @@ class AppWindow:
             return self._body_beta_tensor
 
 
+    # Restrict the models offered (e.g. a trimmed app bundle); None means all.
+    REQUESTED_MODELS = None
+
     def preload_body_models(self):
+        """Load every requested model variant whose wrapper and files exist."""
         from Wrapper.wrapper_dict import WRAPPER_CLASSES
 
+        requested = AppWindow.REQUESTED_MODELS
         for body_model in list(AppWindow.BODY_MODEL_NAMES):
+            if requested is not None and body_model not in requested:
+                AppWindow.BODY_MODEL_NAMES.remove(body_model)
+                continue
             if body_model not in WRAPPER_CLASSES:
                 logger.warning(f'Skipping unavailable body model wrapper {body_model}')
                 AppWindow.BODY_MODEL_NAMES.remove(body_model)
                 continue
+            loaded_genders = []
             for gender in AppWindow.BODY_MODEL_GENDERS[body_model]:
                 logger.info(f'Loading {body_model}-{gender}')
-                model = WRAPPER_CLASSES[body_model]().preload_body_model(gender)
+                try:
+                    model = WRAPPER_CLASSES[body_model]().preload_body_model(gender)
+                except (OSError, AssertionError, ValueError, KeyError, RuntimeError) as error:
+                    # Missing or unreadable model files: offer the other variants.
+                    logger.warning(f'Skipping {body_model}-{gender}: {error}')
+                    continue
                 AppWindow.JOINT_NAMES[body_model] = model.parameter_names
                 AppWindow.KEYPOINT_NAMES[body_model] = model.joint_names
                 key = f'{body_model.lower()}-{gender.lower()}'
                 AppWindow.PRELOADED_BODY_MODELS[key] = model
-        logger.info(f'Loaded body models {AppWindow.PRELOADED_BODY_MODELS.keys()}')
+                loaded_genders.append(gender)
+            if loaded_genders:
+                AppWindow.BODY_MODEL_GENDERS[body_model] = loaded_genders
+            else:
+                logger.warning(f'No model files found for {body_model}; removing it')
+                AppWindow.BODY_MODEL_NAMES.remove(body_model)
+        if not AppWindow.BODY_MODEL_NAMES:
+            raise RuntimeError('No body models could be loaded. Place model files '
+                               'under data/body_models (see README).')
+        logger.info(f'Loaded body models {list(AppWindow.PRELOADED_BODY_MODELS)}')
 
     def load_body_model(self, body_model=None, gender=None):
         body_model = body_model or self._body_model.selected_text
@@ -2773,6 +2799,8 @@ class AppWindow:
 
 
 def main(args):
+    if args.models:
+        AppWindow.REQUESTED_MODELS = [name.strip().upper() for name in args.models.split(',')]
     if args.web:
         logger.info('Initializing web visualization')
         o3d.visualization.webrtc_server.enable_webrtc()
@@ -2790,6 +2818,10 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--web', action='store_true', help='Enable web visualization')
+    parser.add_argument('--models', default=os.environ.get('BMVIS_MODELS', ''),
+                        help='Comma-separated subset of body models to load, e.g. SMPL,MANO '
+                             '(default: every model whose files are present)')
 
-    args = parser.parse_args()
+    # macOS may pass a process-serial argument to a bundled app; ignore unknowns.
+    args, _ = parser.parse_known_args()
     main(args)

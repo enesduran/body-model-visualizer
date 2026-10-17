@@ -226,6 +226,31 @@ jaw, and eye articulation to its joint/landmark targets; it does not generate
 new facial expressions. A fixed root or an unreachable target may retain some
 position error, which is shown in the status message.
 
+### Model availability and the `--models` flag
+
+At start-up the app loads every model variant whose wrapper imports and whose
+files exist under `data/body_models`; missing genders or models are skipped
+with a warning instead of aborting. To offer only a subset regardless of what
+is on disk, pass `--models SMPL,MANO` or set `BMVIS_MODELS=SMPL,MANO`.
+
+### Building a standalone macOS app
+
+`packaging/bmvis.spec` builds a double-clickable app with PyInstaller that
+contains the Python runtime, Open3D, PyTorch and only the model files listed
+in its `BUNDLED_MODELS` (by default SMPL neutral and MANO). From the
+application environment:
+
+```shell
+packaging/build_app.sh
+open "dist/Body Model Visualizer.app"
+```
+
+The bundle runs on the macOS architecture it was built on. It is ad-hoc
+signed, so the first launch may need right-click > Open. Logs are written to
+`~/Library/Logs/BodyModelVisualizer.log`. SMPL-family model files are
+MPI-licensed and may not be redistributed, so keep such builds for machines
+covered by your own licence.
+
 Run the regression tests in the configured application environment:
 
 ```shell
