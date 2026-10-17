@@ -94,12 +94,14 @@ Additional models integrated in this repo:
 
 - STAR: https://star.is.tue.mpg.de/
   - place STAR files under `data/body_models/star/` as `star_male.npz`, `star_female.npz`, `star_neutral.npz`
-- SUPR: https://supr.is.tue.mpg.de/
-  - place SUPR files under `data/body_models/supr/` as `SUPR_MALE.npy`, `SUPR_FEMALE.npy`, `SUPR_NEUTRAL.npy`
-- ANNY source: https://github.com/naver/anny (included through submodule path `anny/`)
-  - ANNY runtime data is read from `anny/src/anny/data` (not from `data/body_models/anny`)
-- MHR source: https://github.com/facebookresearch/MHR
-  - this repo already includes `mhr/assets/` expected by the wrapper
+- SUPR: https://supr.is.tue.mpg.de/ (unconstrained version)
+  - place SUPR files under `data/body_models/supr/` as `supr_male.npy`, `supr_female.npy`, `supr_neutral.npy`
+- ANNY: installed as the `anny` pip package by `environment.yml`; it downloads
+  its own data to `~/.cache/anny` on first use, nothing goes under `data/body_models`
+- MHR: https://github.com/facebookresearch/MHR
+  - the `mhr` pip package comes from `environment.yml`; download the model assets
+    from that repository into `data/body_models/mhr/assets/` (about 4.5 GB; only
+    the LOD 1 files are used)
 
 Copy downloaded files under `data/body_models` so the tree includes:
 
@@ -133,22 +135,8 @@ data
         └── SMPLX_NEUTRAL.npz
 ```
 
-Note for case-sensitive filesystems (Linux): SUPR loader in `main.py` currently uses lower-case names like `supr_male.npy`.
-If your filesystem is case-sensitive, keep filenames consistent with loader expectation.
-
-ANNY data is downloaded by the `anny` package on first use (to `~/.cache/anny`); no files are needed under `data/body_models`. Older checkouts used this layout:
-
-```text
-data
-└── body_models
- └──anny/
-  └── src
-   └── anny
-    └── data
-      ├── mpfb2/
-      ├── shape_calibration/
-      └── ...
-```
+File names are matched exactly, so keep the lower-case SUPR and STAR names
+above on case-sensitive filesystems.
 
 MHR assets used by `MHRWrapper` in `body_models.py` are loaded from `mhr/assets/`. Typical files are:
 
