@@ -27,6 +27,7 @@
 # ----------------------------------------------------------------------------
 import os
 import sys
+import copy
 import glob
 import inspect
 import torch
@@ -191,10 +192,6 @@ class AppWindow:
     MENU_SHOW_SETTINGS = 11
     MENU_ABOUT = 21
 
-    # for mouse dragging joint feature
-    IS_DRAGGING = False
-    DRAG_DEPTH = None
-    DRAG_KEY_PRESSED = False
 
 
     ## ANNY TYPES
@@ -208,6 +205,7 @@ class AppWindow:
     ]
 
     # add Star and Anny
+    # Defaults; each window works on copies made in _init_state().
     BODY_MODEL_NAMES = ["SMPL", "SMPLX", "MANO", "FLAME", "SUPR", "STAR", "ANNY", "MHR"]
     # For ANNY the rig variants take the place of genders.
     BODY_MODEL_GENDERS = {
@@ -343,17 +341,9 @@ class AppWindow:
         'c_tongue0', 'c_tongue1', 'c_tongue2', 'c_tongue3', 'c_tongue4',
         'r_eye', 'r_eye_null', 'l_eye', 'l_eye_null',
     ]
-    CAM_FIRST = True
-    # Saved for the camera reset button.
-    CAM_BOUNDS = None
-    CAM_CENTER = None
 
-    PRELOADED_BODY_MODELS = {}
 
     # save these values per model so ui can be representative of actual values
-    BODY_BETAS = {}
-    BODY_EXPS = {}
-    TRANSPARENCY = {}
 
     POSE_PARAMS = {
         'SMPL': {
@@ -404,22 +394,10 @@ class AppWindow:
         }
     }
 
-    # Populated from wrapper metadata when models are loaded.
-    JOINT_NAMES = {}
-    KEYPOINT_NAMES = {}
 
-    JOINTS = None
-    SELECTED_JOINT = None
-    BODY_TRANSL = None
-    # GROUND_OFFSET is computed on the first render and cached
-    # so that rotating the body does not move its root.
-    GROUND_OFFSET = None
 
     def __init__(self, width, height):
-        # Model selection during construction already refreshes the scene.
-        self.joint_labels_3d_list = []
-        self._joint_geometry_radii = {}
-        self._ik_target_dirty = False
+        self._init_state()
         self.window = gui.Application.instance.create_window(
             "Body Model Visualizer", width, height)
         w = self.window
@@ -443,9 +421,9 @@ class AppWindow:
         self._toolbar = self._build_toolbar(em)
         # Initial state: first model and its first pose group. This renders the
         # mesh and applies the model-specific control visibility.
-        first_model = AppWindow.BODY_MODEL_NAMES[0]
+        first_model = self.body_model_names[0]
         self._on_body_model(first_model, 0)
-        self._on_body_pose_comp(list(AppWindow.POSE_PARAMS[first_model].keys())[0], 0)
+        self._on_body_pose_comp(list(self.pose_params[first_model].keys())[0], 0)
         self._connect_callbacks()
 
         self.info = gui.Label("")
@@ -464,15 +442,39 @@ class AppWindow:
     # ------------------------------------------------------------------ #
     # Construction helpers
     # ------------------------------------------------------------------ #
+    def _init_state(self):
+        """Per-window runtime state; the class-level tables are only defaults."""
+        self.body_model_names = list(AppWindow.BODY_MODEL_NAMES)
+        self.body_model_genders = {k: list(v) for k, v in AppWindow.BODY_MODEL_GENDERS.items()}
+        self.pose_params = copy.deepcopy(AppWindow.POSE_PARAMS)
+        self.models = {}                     # '<model>-<gender>' -> loaded wrapper
+        self.parameter_names_by_model = {}   # model -> {pose group: joint names}
+        self.joint_names_by_model = {}       # model -> output joint names
+        self.betas_by_model = {}
+        self.expressions_by_model = {}
+        self.transparency_by_model = {}
+        self.joints = None                   # displayed joints, ground offset applied
+        self.selected_joint = None
+        self.ground_offset = None            # computed on first render, cached per shape
+        self.is_dragging = False
+        self.drag_depth = None
+        self.drag_key_pressed = False
+        self.cam_first = True
+        self.cam_bounds = None
+        self.cam_center = None
+        self.joint_labels_3d_list = []
+        self._joint_geometry_radii = {}
+        self._ik_target_dirty = False
+
     def _create_model_controls(self, em):
         """Create the model, shape, expression, pose and transform widgets."""
-        first_model = AppWindow.BODY_MODEL_NAMES[0]
+        first_model = self.body_model_names[0]
 
         self._body_model = gui.Combobox()
-        for bm in AppWindow.BODY_MODEL_NAMES:
+        for bm in self.body_model_names:
             self._body_model.add_item(bm)
         self._body_model_gender = gui.Combobox()
-        for gender in AppWindow.BODY_MODEL_GENDERS[first_model]:
+        for gender in self.body_model_genders[first_model]:
             self._body_model_gender.add_item(gender)
 
         # Shape (betas, or ANNY phenotypes)
@@ -500,7 +502,7 @@ class AppWindow:
 
         # Pose: group, joint, per-axis Euler sliders (or one scalar for MHR)
         self._body_pose_comp = gui.Combobox()
-        for k in AppWindow.POSE_PARAMS[first_model].keys():
+        for k in self.pose_params[first_model].keys():
             if k != 'trans':
                 self._body_pose_comp.add_item(k)
         self._body_pose_comp_grid = gui.VGrid(2, 0.25 * em)
@@ -819,10 +821,10 @@ class AppWindow:
     def _active_model(self):
         bm = self._body_model.selected_text
         gender = self._body_model_gender.selected_text
-        return AppWindow.PRELOADED_BODY_MODELS[f'{bm.lower()}-{gender.lower()}']
+        return self.models[f'{bm.lower()}-{gender.lower()}']
 
     def _current_joint_display_names(self):
-        joints = AppWindow.JOINTS
+        joints = self.joints
         joint_count = 0 if joints is None else joints.shape[0]
         joint_names = list(self._active_model().joint_names)
         if len(joint_names) < joint_count:
@@ -833,9 +835,9 @@ class AppWindow:
         for label3d in self.joint_labels_3d_list:
             self._scene.remove_3d_label(label3d)
         self.joint_labels_3d_list.clear()
-        if show and AppWindow.JOINTS is not None:
+        if show and self.joints is not None:
             joint_names = self._current_joint_display_names()
-            for position, name in zip(AppWindow.JOINTS, joint_names):
+            for position, name in zip(self.joints, joint_names):
                 self.joint_labels_3d_list.append(
                     self._scene.add_3d_label(position, name)
                 )
@@ -855,16 +857,16 @@ class AppWindow:
         if update_transparency and self._scene.scene.has_geometry("__body_model__"):
             if show:
                 suggested = 0.2
-                AppWindow.TRANSPARENCY[bm] = suggested
+                self.transparency_by_model[bm] = suggested
                 self._transparency.double_value = suggested
                 self._apply_transparency(suggested)
             else:
 
-                AppWindow.TRANSPARENCY[bm] = 0.0
+                self.transparency_by_model[bm] = 0.0
                 self._transparency.double_value = 0.0
                 self._apply_transparency(0.0)
 
-        joints = AppWindow.JOINTS
+        joints = self.joints
         num_joints = joints.shape[0] if joints is not None else 0
 
         if self._scene.scene.has_geometry("__skeleton__"):
@@ -906,7 +908,7 @@ class AppWindow:
         mat_selected.base_color = green
         mat_selected.shader = "defaultLit"
 
-        joints = AppWindow.JOINTS
+        joints = self.joints
         if show:
             for i in range(num_joints):
                 joint_name = joint_names[i] if i < len(joint_names) else f"joint_{i}"
@@ -942,7 +944,7 @@ class AppWindow:
                     elif joint_name in FOOT_KEYPOINT_NAMES:
                         radius = foot_radius
 
-                current_mat = mat_selected if (AppWindow.SELECTED_JOINT is not None) and (i == AppWindow.SELECTED_JOINT)\
+                current_mat = mat_selected if (self.selected_joint is not None) and (i == self.selected_joint)\
                     else mat
 
                 transform = np.eye(4)
@@ -1043,7 +1045,7 @@ class AppWindow:
     def _build_anny_bone_hierarchy(self):
         hierarchy = {region: {} for region in AppWindow.ANNY_REGION_ORDER}
         # ANNY may be absent (not installed, or excluded from a trimmed build).
-        bone_names = AppWindow.JOINT_NAMES.get("ANNY", {}).get("pose", [])
+        bone_names = self.parameter_names_by_model.get("ANNY", {}).get("pose", [])
         for bone_index, bone_name in enumerate(bone_names):
             # Hide the root (index 0); it is driven by the global rotation sliders.
             if bone_index == 0:
@@ -1113,7 +1115,7 @@ class AppWindow:
         if self._body_model.selected_text != "ANNY":
             return
 
-        bone_name = AppWindow.JOINT_NAMES["ANNY"]["pose"][bone_index]
+        bone_name = self.parameter_names_by_model["ANNY"]["pose"][bone_index]
         region, group = self._classify_anny_bone(bone_name)
         if region not in self._anny_bone_hierarchy:
             return
@@ -1160,7 +1162,7 @@ class AppWindow:
         # not resetting expression anymore instead restore old values
         self._body_exp_tensor = self._get_or_create_exp_tensor(name)
         self._body_exp_val.double_value = self._body_exp_tensor[0, 0].item()
-        AppWindow.CAM_FIRST = True
+        self.cam_first = True
         self._set_model_specific_ui_visibility(name)
 
         # treat anny phenotypes like smpl betas
@@ -1182,22 +1184,22 @@ class AppWindow:
             self._body_beta_text.text = f",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].numpy().tolist())
 
         self._body_model_gender.clear_items()
-        for gender in AppWindow.BODY_MODEL_GENDERS[name]:
+        for gender in self.body_model_genders[name]:
             self._body_model_gender.add_item(gender)
 
-        AppWindow.GROUND_OFFSET = None
+        self.ground_offset = None
         self.load_body_model(name, gender=self._body_model_gender.selected_text)
 
         self._body_pose_comp.clear_items()
-        for k in AppWindow.POSE_PARAMS[name].keys():
+        for k in self.pose_params[name].keys():
             # trans and global_orient are driven by the global sliders.
             if k in ('trans', 'global_orient'):
                 continue
             self._body_pose_comp.add_item(k)
 
         self._body_pose_joint.clear_items()
-        joint_names = AppWindow.JOINT_NAMES[name][self._body_pose_comp.selected_text]
-        for i in range(AppWindow.POSE_PARAMS[name][self._body_pose_comp.selected_text].shape[1]):
+        joint_names = self.parameter_names_by_model[name][self._body_pose_comp.selected_text]
+        for i in range(self.pose_params[name][self._body_pose_comp.selected_text].shape[1]):
             # MHR: hide the first 6 (root translation + rotation), which have their own sliders.
             if name == 'MHR' and i < 6:
                 continue
@@ -1216,7 +1218,7 @@ class AppWindow:
         self._sync_pose_joint_sliders()
         self._sync_global_sliders()
         self._sync_transparency()
-        AppWindow.SELECTED_JOINT = None
+        self.selected_joint = None
         self._on_show_joints(self._show_joints.checked, update_transparency=False)
 
         # Only SMPL-X and FLAME have more than one pose group.
@@ -1228,7 +1230,7 @@ class AppWindow:
     def _on_body_model_gender(self, name, index):
         logger.info(f"Changing {self._body_model.selected_text} body model gender to {name}-{index}")
         self._body_beta_val.double_value = 0.0
-        AppWindow.GROUND_OFFSET = None
+        self.ground_offset = None
         self.load_body_model(self._body_model.selected_text, gender=name)
         self._sync_beta_slider()
         self._sync_pose_joint_sliders()
@@ -1243,7 +1245,7 @@ class AppWindow:
         else:
             self._body_beta_tensor[0, int(self._body_model_shape_comp.selected_text)-1] = float(val)
             self._body_beta_text.text = f",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].numpy().tolist())
-        AppWindow.GROUND_OFFSET = None
+        self.ground_offset = None
         self.load_body_model()
 
     def _on_body_exp_val(self, val):
@@ -1254,14 +1256,14 @@ class AppWindow:
     def _mhr_limits(self, index):
         """(min, max) of one MHR model parameter for the selected MHR variant."""
         gender = self._body_model_gender.selected_text
-        wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
+        wrapper = self.models[f'mhr-{gender.lower()}']
         return wrapper.parameter_limits['model_parameters'][index]
 
     def _sync_mhr_value_slider(self, index):
         lo, hi = self._mhr_limits(index)
         self._body_pose_joint_val.set_limits(float(lo), float(hi))
         self._body_pose_joint_val.double_value = float(
-            AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, index])
+            self.pose_params['MHR']['model_parameters'][0, index])
 
     def _on_body_pose_joint(self, name, index):
         self._sync_pose_joint_sliders()
@@ -1280,21 +1282,21 @@ class AppWindow:
                        self._body_pose_joint_z.int_value]
         euler_angle[axis] = val
         axis_angle = euler_to_rotvec_for_body_model(bm, euler_angle)
-        AppWindow.POSE_PARAMS[bm][bp][0, ji] = torch.from_numpy(axis_angle).float()
+        self.pose_params[bm][bp][0, ji] = torch.from_numpy(axis_angle).float()
         self.load_body_model()
 
     def _on_body_pose_joint_val(self, val):
         bm = self._body_model.selected_text
         bp = self._body_pose_comp.selected_text
         ji = int(self._body_pose_joint.selected_text.split('-')[0])
-        AppWindow.POSE_PARAMS[bm][bp][0, ji] = float(val)
+        self.pose_params[bm][bp][0, ji] = float(val)
 
         # MHR: Root-Translation/Rotation Sync mit trans/global_orient
         if bm == 'MHR':
             if ji in [0, 1, 2]:
-                AppWindow.POSE_PARAMS['MHR']['trans'][0, 0, ji] = float(val)
+                self.pose_params['MHR']['trans'][0, 0, ji] = float(val)
             elif ji in [3, 4, 5]:
-                AppWindow.POSE_PARAMS['MHR']['global_orient'][0, 0, ji - 3] = float(val)
+                self.pose_params['MHR']['global_orient'][0, 0, ji - 3] = float(val)
 
         self.load_body_model()
 
@@ -1312,8 +1314,8 @@ class AppWindow:
             self._sync_mhr_value_slider(int(name.split('-')[0]))
         self._body_pose_joint.clear_items()
         bm = self._body_model.selected_text
-        joint_names = AppWindow.JOINT_NAMES[bm][name]
-        for i in range(AppWindow.POSE_PARAMS[bm][name].shape[1]):
+        joint_names = self.parameter_names_by_model[bm][name]
+        for i in range(self.pose_params[bm][name].shape[1]):
             # MHR: hide the first 6 (root translation + rotation), which have their own sliders.
             if bm == 'MHR' and i < 6:
                 continue
@@ -1337,10 +1339,10 @@ class AppWindow:
         ]
         else:
             self._body_beta_tensor = torch.zeros(1, AppWindow.BODY_MODEL_N_BETAS[self._body_model.selected_text])
-            AppWindow.BODY_BETAS[self._body_model.selected_text] = self._body_beta_tensor
+            self.betas_by_model[self._body_model.selected_text] = self._body_beta_tensor
             self._body_beta_text.text = f",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].numpy().tolist())
             self._body_beta_val.double_value = 0.0
-        AppWindow.GROUND_OFFSET = None
+        self.ground_offset = None
         self.load_body_model()
 
     def _on_anny_phenotype_comp(self, name, index):
@@ -1350,7 +1352,7 @@ class AppWindow:
         name = self._anny_phenotype.selected_text
         self._anny_phenotype_values[name] = float(val)
         if self._body_model.selected_text == 'ANNY':
-            AppWindow.GROUND_OFFSET = None
+            self.ground_offset = None
             self.load_body_model()
 
     def _on_anny_reset_shape(self):
@@ -1359,34 +1361,34 @@ class AppWindow:
             self._anny_phenotype.selected_text
         ]
         if self._body_model.selected_text == 'ANNY':
-            AppWindow.GROUND_OFFSET = None
+            self.ground_offset = None
             self.load_body_model()
 
     def _on_body_exp_reset(self):
         self._body_exp_tensor = torch.zeros(1, 10)
-        AppWindow.BODY_EXPS[self._body_model.selected_text] = self._body_exp_tensor
+        self.expressions_by_model[self._body_model.selected_text] = self._body_exp_tensor
         self._body_exp_text.text = f",".join(f'{x:.1f}' for x in self._body_exp_tensor[0].numpy().tolist())
         self._body_exp_val.double_value = 0.0
         self.load_body_model()
 
     def _on_body_pose_reset(self):
         bm = self._body_model.selected_text
-        for key in AppWindow.POSE_PARAMS[bm]:
-            AppWindow.POSE_PARAMS[bm][key] = torch.zeros_like(AppWindow.POSE_PARAMS[bm][key])
+        for key in self.pose_params[bm]:
+            self.pose_params[bm][key] = torch.zeros_like(self.pose_params[bm][key])
         self._sync_pose_joint_sliders()
         self.load_body_model()
 
     # NEW GLOBAL TRANSLATION
     def _on_trans(self, axis, val):
         """Global translation slider for one axis (0=X, 1=Y, 2=Z)."""
-        params = AppWindow.POSE_PARAMS[self._body_model.selected_text]
+        params = self.pose_params[self._body_model.selected_text]
         if "trans" not in params:
             return
         params["trans"][0, 0, axis] = val
         self.load_body_model()
 
     def _on_trans_reset(self):
-        params = AppWindow.POSE_PARAMS[self._body_model.selected_text]
+        params = self.pose_params[self._body_model.selected_text]
         if "trans" not in params:
             return
         params["trans"] = torch.zeros_like(params["trans"])
@@ -1401,7 +1403,7 @@ class AppWindow:
     def _set_global_rotation(self, axis, val):
         """Write one global rotation component; False if the model has none."""
         bm = self._body_model.selected_text
-        params = AppWindow.POSE_PARAMS[bm]
+        params = self.pose_params[bm]
         if "global_orient" in params:
             params["global_orient"][0, 0, axis] = val
             if bm == 'MHR':
@@ -1429,11 +1431,11 @@ class AppWindow:
         self.load_body_model()
 
     def _on_transparency(self, val):
-        AppWindow.TRANSPARENCY[self._body_model.selected_text] = val
+        self.transparency_by_model[self._body_model.selected_text] = val
         self._apply_transparency(val)
 
     def _on_transparency_reset(self):
-        AppWindow.TRANSPARENCY[self._body_model.selected_text] = 0.0
+        self.transparency_by_model[self._body_model.selected_text] = 0.0
         if self._scene.scene.has_geometry("__body_model__"):
             mat_body = rendering.MaterialRecord()
             mat_body.shader = "defaultLit"
@@ -1442,16 +1444,16 @@ class AppWindow:
         self._transparency.double_value = 0.0
 
     def _on_camera_reset(self):
-        if AppWindow.CAM_BOUNDS is not None:
-            self._scene.setup_camera(60, AppWindow.CAM_BOUNDS, AppWindow.CAM_CENTER)
+        if self.cam_bounds is not None:
+            self._scene.setup_camera(60, self.cam_bounds, self.cam_center)
 
     def _look_from(self, direction):
         """Place the camera on the given side of the model, looking at its center."""
-        if AppWindow.CAM_BOUNDS is None:
+        if self.cam_bounds is None:
             return
-        center = np.asarray(AppWindow.CAM_CENTER, dtype=np.float32)
+        center = np.asarray(self.cam_center, dtype=np.float32)
         direction = np.asarray(direction, dtype=np.float32)
-        distance = 1.8 * float(np.max(AppWindow.CAM_BOUNDS.get_extent()))
+        distance = 1.8 * float(np.max(self.cam_bounds.get_extent()))
         eye = center + direction * distance
         up = np.array([0., 0., -1.], dtype=np.float32) if abs(direction[1]) > 0.9 \
             else np.array([0., 1., 0.], dtype=np.float32)
@@ -1475,9 +1477,9 @@ class AppWindow:
             button.is_on = checkbox.checked
 
     def _on_drag_joints(self, enabled):
-        if AppWindow.IS_DRAGGING:
+        if self.is_dragging:
             self._finish_joint_drag()
-        AppWindow.DRAG_KEY_PRESSED = False
+        self.drag_key_pressed = False
         if enabled:
             self._show_joints.checked = True
             self._on_show_joints(True)
@@ -1486,16 +1488,16 @@ class AppWindow:
         self._sync_toolbar()
 
     def _finish_joint_drag(self):
-        AppWindow.IS_DRAGGING = False
-        AppWindow.DRAG_DEPTH = None
+        self.is_dragging = False
+        self.drag_depth = None
         self._scene.set_view_controls(gui.SceneWidget.Controls.ROTATE_CAMERA)
         if self._ik_target_dirty:
             self._on_run_ik()
 
     def _on_key_widget(self, event):
         if event.key == gui.KeyName.Q:
-            AppWindow.DRAG_KEY_PRESSED = event.type == gui.KeyEvent.Type.DOWN
-            if not AppWindow.DRAG_KEY_PRESSED and AppWindow.IS_DRAGGING:
+            self.drag_key_pressed = event.type == gui.KeyEvent.Type.DOWN
+            if not self.drag_key_pressed and self.is_dragging:
                 self._finish_joint_drag()
             return gui.Widget.EventCallbackResult.HANDLED
 
@@ -1504,11 +1506,11 @@ class AppWindow:
             gui.KeyName.THREE: [0, -0.01, 0], gui.KeyName.FOUR: [0, 0.01, 0],
             gui.KeyName.FIVE: [0, 0, -0.01], gui.KeyName.SIX: [0, 0, 0.01],
         }
-        selected = AppWindow.SELECTED_JOINT
+        selected = self.selected_joint
         if (event.type == gui.KeyEvent.Type.DOWN and self._show_joints.checked
-                and selected is not None and AppWindow.JOINTS is not None
-                and selected < len(AppWindow.JOINTS) and event.key in offsets):
-            AppWindow.JOINTS[selected] += np.asarray(offsets[event.key])
+                and selected is not None and self.joints is not None
+                and selected < len(self.joints) and event.key in offsets):
+            self.joints[selected] += np.asarray(offsets[event.key])
             self._ik_target_dirty = True
             self._on_show_joints(True, update_transparency=False)
             self._update_label('Target moved. Click Run IK to fit the pose.')
@@ -1517,7 +1519,7 @@ class AppWindow:
 
     def _project_joint_positions(self):
         """Return viewport pixels and depth for picking the visible joint markers."""
-        joints = AppWindow.JOINTS
+        joints = self.joints
         camera = self._scene.scene.camera
         positions = np.column_stack((joints, np.ones(len(joints))))
         clip = positions @ np.asarray(camera.get_view_matrix()).T
@@ -1535,9 +1537,9 @@ class AppWindow:
         frame = self._scene.frame
         x, y = event.x - frame.x, event.y - frame.y
         if (event.type == gui.MouseEvent.Type.BUTTON_DOWN
-                and (AppWindow.DRAG_KEY_PRESSED or self._drag_joints.checked)
+                and (self.drag_key_pressed or self._drag_joints.checked)
                 and self._show_joints.checked
-                and AppWindow.JOINTS is not None and len(AppWindow.JOINTS)):
+                and self.joints is not None and len(self.joints)):
             if not (0 <= x < frame.width and 0 <= y < frame.height):
                 return gui.Widget.EventCallbackResult.IGNORED
             pixels, depths, valid = self._project_joint_positions()
@@ -1547,9 +1549,9 @@ class AppWindow:
             if distances[selected] > max(12., self.em) ** 2:
                 self._update_label('Click a joint marker to select it.')
                 return gui.Widget.EventCallbackResult.HANDLED
-            AppWindow.SELECTED_JOINT = selected
-            AppWindow.IS_DRAGGING = True
-            AppWindow.DRAG_DEPTH = float(depths[selected])
+            self.selected_joint = selected
+            self.is_dragging = True
+            self.drag_depth = float(depths[selected])
             self._scene.set_view_controls(gui.SceneWidget.Controls.PICK_POINTS)
             name = self._current_joint_display_names()[selected]
             self._update_label(f'Selected {name}. Drag the marker; release to solve IK.')
@@ -1557,16 +1559,16 @@ class AppWindow:
             return gui.Widget.EventCallbackResult.HANDLED
 
         if (event.type in (gui.MouseEvent.Type.DRAG, gui.MouseEvent.Type.MOVE)
-                and AppWindow.IS_DRAGGING
-                and AppWindow.DRAG_DEPTH is not None):
+                and self.is_dragging
+                and self.drag_depth is not None):
             world = self._scene.scene.camera.unproject(
-                x, y, AppWindow.DRAG_DEPTH, frame.width, frame.height)
-            AppWindow.JOINTS[AppWindow.SELECTED_JOINT] = np.asarray(world[:3])
+                x, y, self.drag_depth, frame.width, frame.height)
+            self.joints[self.selected_joint] = np.asarray(world[:3])
             self._ik_target_dirty = True
             self._on_show_joints(True, update_transparency=False)
             return gui.Widget.EventCallbackResult.HANDLED
 
-        if event.type == gui.MouseEvent.Type.BUTTON_UP and AppWindow.IS_DRAGGING:
+        if event.type == gui.MouseEvent.Type.BUTTON_UP and self.is_dragging:
             self._finish_joint_drag()
             return gui.Widget.EventCallbackResult.HANDLED
         return gui.Widget.EventCallbackResult.IGNORED
@@ -1581,22 +1583,22 @@ class AppWindow:
         self.window.set_needs_layout()
 
     def _on_run_ik(self):
-        if AppWindow.JOINTS is None:
+        if self.joints is None:
             return
         bm = self._body_model.selected_text
         # Model adapters already include user translation and root rotation.
         # Only the viewer's ground offset needs to be removed from the targets.
-        targets = AppWindow.JOINTS - np.array([0., AppWindow.GROUND_OFFSET or 0., 0.])
+        targets = self.joints - np.array([0., self.ground_offset or 0., 0.])
         try:
             result = solve_ik(
-                self._active_model(), AppWindow.POSE_PARAMS[bm], targets,
+                self._active_model(), self.pose_params[bm], targets,
                 self.get_shape_params(), self._body_exp_tensor,
             )
         except (ValueError, RuntimeError) as error:
             logger.exception(f'IK failed for {bm}: {error}')
             self._update_label(f'IK could not solve this target: {error}')
             return
-        AppWindow.POSE_PARAMS[bm] = result.parameters
+        self.pose_params[bm] = result.parameters
         self.load_body_model()
         self._sync_pose_joint_sliders()
         self._sync_global_sliders()
@@ -1635,7 +1637,7 @@ class AppWindow:
             self._body_pose_joint_z.int_value = 0
             return
 
-        rotvec = AppWindow.POSE_PARAMS[bm][bp][0, ji].numpy()
+        rotvec = self.pose_params[bm][bp][0, ji].numpy()
         euler = rotvec_to_euler_for_body_model(bm, rotvec)
         self._body_pose_joint_x.int_value = int(round(euler[0]))
         self._body_pose_joint_y.int_value = int(round(euler[1]))
@@ -1645,7 +1647,7 @@ class AppWindow:
     def _sync_global_sliders(self):
         # same here translation and orientation sync instead of reset
         bm = self._body_model.selected_text
-        params = AppWindow.POSE_PARAMS.get(bm, {})
+        params = self.pose_params.get(bm, {})
 
         if "trans" in params:
             t = params["trans"][0, 0]
@@ -1678,14 +1680,14 @@ class AppWindow:
             self._rot_z.double_value = 0.0
 
     def _get_or_create_beta_tensor(self, name):
-        if name not in AppWindow.BODY_BETAS:
-            AppWindow.BODY_BETAS[name] = torch.zeros(1, AppWindow.BODY_MODEL_N_BETAS[name])
-        return AppWindow.BODY_BETAS[name]
+        if name not in self.betas_by_model:
+            self.betas_by_model[name] = torch.zeros(1, AppWindow.BODY_MODEL_N_BETAS[name])
+        return self.betas_by_model[name]
 
     def _get_or_create_exp_tensor(self, name):
-        if name not in AppWindow.BODY_EXPS:
-            AppWindow.BODY_EXPS[name] = torch.zeros(1, 10)
-        return AppWindow.BODY_EXPS[name]
+        if name not in self.expressions_by_model:
+            self.expressions_by_model[name] = torch.zeros(1, 10)
+        return self.expressions_by_model[name]
 
     def _sync_beta_slider(self):
         if self._body_model.selected_text == 'ANNY':
@@ -1712,7 +1714,7 @@ class AppWindow:
 
     def _sync_transparency(self):
         bm = self._body_model.selected_text
-        val = AppWindow.TRANSPARENCY.get(bm, 0.0)
+        val = self.transparency_by_model.get(bm, 0.0)
         self._transparency.double_value = val
         self._apply_transparency(val)
 
@@ -1764,9 +1766,9 @@ class AppWindow:
             'expression': self._body_exp_tensor,
             'gender': self._body_model_gender.selected_text,
             'body_model': self._body_model.selected_text,
-            'joints': AppWindow.JOINTS,
+            'joints': self.joints,
         }
-        output_dict.update(AppWindow.POSE_PARAMS[self._body_model.selected_text])
+        output_dict.update(self.pose_params[self._body_model.selected_text])
         logger.debug(f'Saving output to {filename}')
         joblib.dump(output_dict, filename)
 
@@ -1861,12 +1863,12 @@ class AppWindow:
     def preload_body_models(self):
         """Load every requested model variant whose wrapper and files exist."""
         requested = AppWindow.REQUESTED_MODELS
-        for body_model in list(AppWindow.BODY_MODEL_NAMES):
+        for body_model in list(self.body_model_names):
             if requested is not None and body_model not in requested:
-                AppWindow.BODY_MODEL_NAMES.remove(body_model)
+                self.body_model_names.remove(body_model)
                 continue
             loaded_genders = []
-            for gender in AppWindow.BODY_MODEL_GENDERS[body_model]:
+            for gender in self.body_model_genders[body_model]:
                 logger.info(f'Loading {body_model}-{gender}')
                 try:
                     model = WRAPPER_CLASSES[body_model]().preload_body_model(gender)
@@ -1878,32 +1880,32 @@ class AppWindow:
                     # Missing or unreadable model files: offer the other variants.
                     logger.warning(f'Skipping {body_model}-{gender}: {error}')
                     continue
-                AppWindow.JOINT_NAMES[body_model] = model.parameter_names
-                AppWindow.KEYPOINT_NAMES[body_model] = model.joint_names
+                self.parameter_names_by_model[body_model] = model.parameter_names
+                self.joint_names_by_model[body_model] = model.joint_names
                 key = f'{body_model.lower()}-{gender.lower()}'
-                AppWindow.PRELOADED_BODY_MODELS[key] = model
+                self.models[key] = model
                 loaded_genders.append(gender)
             if loaded_genders:
-                AppWindow.BODY_MODEL_GENDERS[body_model] = loaded_genders
+                self.body_model_genders[body_model] = loaded_genders
             else:
                 logger.warning(f'No model files found for {body_model}; removing it')
-                AppWindow.BODY_MODEL_NAMES.remove(body_model)
-        if not AppWindow.BODY_MODEL_NAMES:
+                self.body_model_names.remove(body_model)
+        if not self.body_model_names:
             raise RuntimeError('No body models could be loaded. Place model files '
                                f'under {external_models_dir()} (see README).')
-        logger.info(f'Loaded body models {list(AppWindow.PRELOADED_BODY_MODELS)}')
+        logger.info(f'Loaded body models {list(self.models)}')
 
     def load_body_model(self, body_model=None, gender=None):
         body_model = body_model or self._body_model.selected_text
         gender = gender or self._body_model_gender.selected_text
-        model = AppWindow.PRELOADED_BODY_MODELS[f'{body_model.lower()}-{gender.lower()}']
+        model = self.models[f'{body_model.lower()}-{gender.lower()}']
         mesh_data = model.evaluate(
-            AppWindow.POSE_PARAMS[body_model], self.get_shape_params(),
+            self.pose_params[body_model], self.get_shape_params(),
             expression=self._body_exp_tensor,
         )
         verts, joints, faces = mesh_data
         # Viewer offsets must not mutate arrays owned by the model.
-        AppWindow.JOINTS = joints.copy()
+        self.joints = joints.copy()
 
         # bauen des 3D-Mesh
         mesh = o3d.geometry.TriangleMesh()
@@ -1914,31 +1916,30 @@ class AppWindow:
         mesh.paint_uniform_color([0.5, 0.5, 0.5])
 
         # Compute the ground offset once per shape.
-        if AppWindow.GROUND_OFFSET is None:
+        if self.ground_offset is None:
             user_y = 0.0
-            if "trans" in AppWindow.POSE_PARAMS[body_model]:
-                user_y = AppWindow.POSE_PARAMS[body_model]["trans"][0, 0, 1].item()
+            if "trans" in self.pose_params[body_model]:
+                user_y = self.pose_params[body_model]["trans"][0, 0, 1].item()
             base_min_y = mesh.get_min_bound()[1] - user_y
-            AppWindow.GROUND_OFFSET = -base_min_y
-        ground_offset = AppWindow.GROUND_OFFSET
+            self.ground_offset = -base_min_y
+        ground_offset = self.ground_offset
         mesh.translate([0, ground_offset, 0])
-        AppWindow.JOINTS += np.array([0, ground_offset, 0])
+        self.joints += np.array([0, ground_offset, 0])
         self._ik_target_dirty = False
-        AppWindow.IS_DRAGGING = False
-        AppWindow.DRAG_DEPTH = None
+        self.is_dragging = False
+        self.drag_depth = None
 
         if self._scene.scene.has_geometry("__body_model__"):
             self._scene.scene.remove_geometry("__body_model__")
         self._scene.scene.add_geometry("__body_model__", mesh,
                                         self.settings.material)
         bounds = mesh.get_axis_aligned_bounding_box()
-        if AppWindow.CAM_FIRST:
+        if self.cam_first:
             self._scene.setup_camera(60, bounds, bounds.get_center())
-            AppWindow.CAM_FIRST = False
-            AppWindow.CAM_BOUNDS = bounds
-            AppWindow.CAM_CENTER = bounds.get_center()
+            self.cam_first = False
+            self.cam_bounds = bounds
+            self.cam_center = bounds.get_center()
 
-        AppWindow.BODY_TRANSL = torch.tensor([[0, ground_offset, 0]])
         self._on_show_joints(self._show_joints.checked, update_transparency=False)
 
         # add_geometry() above always attaches the default (opaque) material,
@@ -1946,7 +1947,7 @@ class AppWindow:
         # this model every time the mesh is rebuilt (e.g. on every pose/beta
         # slider tweak, not just on model switch). Re-apply it here so the
         # rendered mesh always matches the transparency slider.
-        self._apply_transparency(AppWindow.TRANSPARENCY.get(body_model, 0.0))
+        self._apply_transparency(self.transparency_by_model.get(body_model, 0.0))
 
     def load(self, path):
 

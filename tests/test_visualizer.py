@@ -47,11 +47,9 @@ class FakeScene:
 
 class SceneTests(unittest.TestCase):
     def setUp(self):
-        self.original_joints = AppWindow.JOINTS
-        self.original_selected = AppWindow.SELECTED_JOINT
-        AppWindow.JOINTS = np.array([[0., 0., 0.], [0., 1., 0.], [0., 2., 0.]])
-        AppWindow.SELECTED_JOINT = None
         self.window = AppWindow.__new__(AppWindow)
+        self.window._init_state()
+        self.window.joints = np.array([[0., 0., 0.], [0., 1., 0.], [0., 2., 0.]])
         self.scene = FakeScene()
         self.window._scene = SimpleNamespace(
             scene=self.scene, add_3d_label=self.scene.add_3d_label,
@@ -67,10 +65,6 @@ class SceneTests(unittest.TestCase):
         )
         self.window._active_model = lambda: self.model
 
-    def tearDown(self):
-        AppWindow.JOINTS = self.original_joints
-        AppWindow.SELECTED_JOINT = self.original_selected
-
     def test_labels_do_not_accumulate_or_remove_stale_handles(self):
         for _ in range(5):
             self.window._on_show_joint_labels(True)
@@ -80,7 +74,7 @@ class SceneTests(unittest.TestCase):
         self.window._on_show_joint_labels(False)
         self.assertFalse(self.scene.labels)
         self.assertFalse(self.window.joint_labels_3d_list)
-        AppWindow.JOINTS = None
+        self.window.joints = None
         self.window._on_show_joint_labels(True)
 
     def test_pose_updates_reuse_spheres_at_absolute_positions(self):
@@ -89,17 +83,17 @@ class SceneTests(unittest.TestCase):
         for sphere in spheres:
             np.testing.assert_allclose(sphere.get_center(), 0, atol=1e-12)
         for _ in range(2):
-            AppWindow.JOINTS += np.array([1., 0., 0.])
+            self.window.joints += np.array([1., 0., 0.])
             self.window._on_show_joints(True, update_transparency=False)
             for i, sphere in enumerate(spheres):
                 self.assertIs(self.scene.geometries[f'__joints_{i}__'], sphere)
                 np.testing.assert_allclose(
-                    self.scene.transforms[f'__joints_{i}__'][:3, 3], AppWindow.JOINTS[i]
+                    self.scene.transforms[f'__joints_{i}__'][:3, 3], self.window.joints[i]
                 )
         # Three spheres once, plus one skeleton per refresh.
         self.assertEqual(self.scene.additions, 6)
         np.testing.assert_array_equal(
-            np.asarray(self.scene.geometries['__skeleton__'].points), AppWindow.JOINTS
+            np.asarray(self.scene.geometries['__skeleton__'].points), self.window.joints
         )
 
     def test_switching_joint_count_and_radius_then_hiding_clears_geometry(self):
@@ -107,7 +101,7 @@ class SceneTests(unittest.TestCase):
         old = self.scene.geometries['__joints_1__']
         # Another model can assign a different marker size to the same index.
         self.model.joint_names[1] = 'nose'
-        AppWindow.JOINTS = AppWindow.JOINTS[:2]
+        self.window.joints = self.window.joints[:2]
         self.window._on_show_joints(True, update_transparency=False)
         self.assertNotIn('__joints_2__', self.scene.geometries)
         self.assertIsNot(old, self.scene.geometries['__joints_1__'])
@@ -129,31 +123,22 @@ class SceneTests(unittest.TestCase):
         self.window._anny_phenotype_val = SimpleNamespace(double_value=0.)
         self.window._anny_phenotype_values = dict(AppWindow.ANNY_PHENOTYPE_DEFAULTS)
         self.window.load_body_model = lambda *args, **kwargs: calls.append((args, kwargs))
-        previous_ground = AppWindow.GROUND_OFFSET
-        try:
-            AppWindow.GROUND_OFFSET = 2.
-            self.window._on_anny_phenotype_val(0.7)
-            self.assertIsNone(AppWindow.GROUND_OFFSET)
-            self.assertEqual(self.window._anny_phenotype_values['height'], 0.7)
-            self.window._on_anny_reset_shape()
-            # Reloads the current selection (ANNY/default) rather than a hard-coded variant.
-            self.assertEqual(calls, [((), {})] * 2)
-        finally:
-            AppWindow.GROUND_OFFSET = previous_ground
+        self.window.ground_offset = 2.
+        self.window._on_anny_phenotype_val(0.7)
+        self.assertIsNone(self.window.ground_offset)
+        self.assertEqual(self.window._anny_phenotype_values['height'], 0.7)
+        self.window._on_anny_reset_shape()
+        # Reloads the current selection (ANNY/default) rather than a hard-coded variant.
+        self.assertEqual(calls, [((), {})] * 2)
 
 
 class InteractionTests(unittest.TestCase):
     def setUp(self):
-        names = ('JOINTS', 'SELECTED_JOINT', 'IS_DRAGGING', 'DRAG_DEPTH', 'DRAG_KEY_PRESSED')
-        self.saved = {name: getattr(AppWindow, name) for name in names}
-        AppWindow.JOINTS = np.zeros((1, 3))
-        AppWindow.SELECTED_JOINT = None
-        AppWindow.IS_DRAGGING = False
-        AppWindow.DRAG_DEPTH = None
-        AppWindow.DRAG_KEY_PRESSED = True
         self.window = AppWindow.__new__(AppWindow)
+        self.window._init_state()
+        self.window.joints = np.zeros((1, 3))
+        self.window.drag_key_pressed = True
         self.window.em = 16
-        self.window._ik_target_dirty = False
         self.window._show_joints = SimpleNamespace(checked=True)
         self.window._drag_joints = SimpleNamespace(checked=False)
         self.window._scene = SimpleNamespace(
@@ -167,18 +152,14 @@ class InteractionTests(unittest.TestCase):
         self.window._on_show_joints = Mock()
         self.window._update_label = Mock()
 
-    def tearDown(self):
-        for name, value in self.saved.items():
-            setattr(AppWindow, name, value)
-
     def mouse(self, event_type):
         return self.window._on_mouse_widget(SimpleNamespace(type=event_type, x=150, y=90))
 
     def test_drag_release_solves_once_for_every_model(self):
-        for model in AppWindow.BODY_MODEL_NAMES:
+        for model in self.window.body_model_names:
             with self.subTest(model=model):
                 self.window._body_model = SimpleNamespace(selected_text=model)
-                AppWindow.DRAG_KEY_PRESSED = True
+                self.window.drag_key_pressed = True
                 self.window._on_run_ik.reset_mock()
                 self.mouse(gui.MouseEvent.Type.BUTTON_DOWN)
                 self.mouse(gui.MouseEvent.Type.DRAG)
@@ -186,8 +167,8 @@ class InteractionTests(unittest.TestCase):
                 self.mouse(gui.MouseEvent.Type.BUTTON_UP)
                 self.window._on_key_widget(SimpleNamespace(type=gui.KeyEvent.Type.UP, key=gui.KeyName.Q))
                 self.window._on_run_ik.assert_called_once()
-                self.assertFalse(AppWindow.IS_DRAGGING)
-                self.assertIsNone(AppWindow.DRAG_DEPTH)
+                self.assertFalse(self.window.is_dragging)
+                self.assertIsNone(self.window.drag_depth)
 
     def test_releasing_q_before_mouse_also_solves_once(self):
         self.mouse(gui.MouseEvent.Type.BUTTON_DOWN)
@@ -197,20 +178,20 @@ class InteractionTests(unittest.TestCase):
         self.window._on_run_ik.assert_called_once()
 
     def test_drag_mode_works_without_keyboard_focus(self):
-        AppWindow.DRAG_KEY_PRESSED = False
+        self.window.drag_key_pressed = False
         self.window._drag_joints.checked = True
         self.mouse(gui.MouseEvent.Type.BUTTON_DOWN)
         self.mouse(gui.MouseEvent.Type.DRAG)
-        np.testing.assert_allclose(AppWindow.JOINTS[0], [1., 2., 3.])
+        np.testing.assert_allclose(self.window.joints[0], [1., 2., 3.])
         self.assertTrue(self.window._ik_target_dirty)
         self.mouse(gui.MouseEvent.Type.BUTTON_UP)
         self.window._on_run_ik.assert_called_once()
 
     def test_keyboard_nudge_applies_only_on_key_down(self):
-        AppWindow.SELECTED_JOINT = 0
+        self.window.selected_joint = 0
         self.window._on_key_widget(SimpleNamespace(type=gui.KeyEvent.Type.DOWN, key=gui.KeyName.TWO))
         self.window._on_key_widget(SimpleNamespace(type=gui.KeyEvent.Type.UP, key=gui.KeyName.TWO))
-        np.testing.assert_allclose(AppWindow.JOINTS[0], [0.01, 0, 0])
+        np.testing.assert_allclose(self.window.joints[0], [0.01, 0, 0])
         self.assertTrue(self.window._ik_target_dirty)
 
 

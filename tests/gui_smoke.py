@@ -27,7 +27,7 @@ def render_frames(app, window):
 def check_ik(window):
     model = window._active_model()
     name = window._body_model.selected_text
-    params = AppWindow.POSE_PARAMS[name]
+    params = window.pose_params[name]
     goal = copy.deepcopy(params)
     if name in ('SMPL', 'SMPLX'):
         goal['body_pose'][0, 15, 2] += 0.25
@@ -41,9 +41,9 @@ def check_ik(window):
         goal['pose'][0, 1 if name == 'ANNY' else 16, 2] += 0.25
     with torch.no_grad():
         destination = model.ik_joints(goal, window.get_shape_params(), window._body_exp_tensor).numpy()
-    destination += np.array([0., AppWindow.GROUND_OFFSET or 0., 0.])
-    selected = int(np.linalg.norm(destination - AppWindow.JOINTS, axis=1).argmax())
-    AppWindow.JOINTS[selected] = destination[selected]
+    destination += np.array([0., window.ground_offset or 0., 0.])
+    selected = int(np.linalg.norm(destination - window.joints, axis=1).argmax())
+    window.joints[selected] = destination[selected]
     result = window._on_run_ik()
     assert result is not None and result.initial_error > 0.001, name
     assert result.final_error < result.initial_error * 0.5, (name, result)
@@ -57,24 +57,24 @@ def check_ik(window):
     selected = int(candidates[len(candidates) // 2])
     x, y = pixels[selected]
     point = window._scene.scene.camera.unproject(float(x), float(y), float(depths[selected]), frame.width, frame.height)
-    np.testing.assert_allclose(point, AppWindow.JOINTS[selected], atol=2e-4)
-    AppWindow.DRAG_KEY_PRESSED = True
+    np.testing.assert_allclose(point, window.joints[selected], atol=2e-4)
+    window.drag_key_pressed = True
     window._on_mouse_widget(SimpleNamespace(type=gui.MouseEvent.Type.BUTTON_DOWN,
                                            x=frame.x + x, y=frame.y + y))
-    assert AppWindow.IS_DRAGGING, name
+    assert window.is_dragging, name
     # Exercise the real pressed-button DRAG event, without relying on Q focus.
-    AppWindow.DRAG_KEY_PRESSED = False
+    window.drag_key_pressed = False
     window._drag_joints.checked = True
-    dragged = AppWindow.SELECTED_JOINT
-    before = AppWindow.JOINTS[dragged].copy()
+    dragged = window.selected_joint
+    before = window.joints[dragged].copy()
     window._on_mouse_widget(SimpleNamespace(type=gui.MouseEvent.Type.DRAG,
                                            x=frame.x + x + 8, y=frame.y + y))
     assert window._ik_target_dirty, name
-    assert np.linalg.norm(AppWindow.JOINTS[dragged] - before) > 1e-5, name
+    assert np.linalg.norm(window.joints[dragged] - before) > 1e-5, name
     window._on_mouse_widget(SimpleNamespace(type=gui.MouseEvent.Type.BUTTON_UP,
                                            x=frame.x + x, y=frame.y + y))
-    assert not AppWindow.IS_DRAGGING and AppWindow.DRAG_DEPTH is None
-    AppWindow.DRAG_KEY_PRESSED = False
+    assert not window.is_dragging and window.drag_depth is None
+    window.drag_key_pressed = False
     window._drag_joints.checked = False
     print(f'GUI IK and joint picking passed: {name}', flush=True)
 
@@ -94,7 +94,7 @@ def check_number_edits(window):
     before = window._trans_x.double_value
     window._trans_x._on_edit(before + 0.05)
     assert abs(window._trans_x.double_value - (before + 0.05)) < 1e-6
-    assert abs(float(AppWindow.POSE_PARAMS[window._body_model.selected_text]['trans'][0, 0, 0]) - (before + 0.05)) < 1e-6
+    assert abs(float(window.pose_params[window._body_model.selected_text]['trans'][0, 0, 0]) - (before + 0.05)) < 1e-6
     window._trans_x._on_edit(before)
     # Out-of-range input is clamped to the slider limits (MHR hides these sliders).
     if window._body_model.selected_text != 'MHR':
@@ -114,13 +114,13 @@ def check_toolbar(window):
 
 
 def check_models(window):
-    for index, name in enumerate(AppWindow.BODY_MODEL_NAMES):
+    for index, name in enumerate(window.body_model_names):
         window._body_model.selected_text = name
         window._on_body_model(name, index)
         window._show_joints.checked = True
         window._on_show_joints(True)
         window._show_joint_labels.checked = True
-        for gender_index, gender in enumerate(AppWindow.BODY_MODEL_GENDERS[name]):
+        for gender_index, gender in enumerate(window.body_model_genders[name]):
             window._body_model_gender.selected_text = gender
             window._on_body_model_gender(gender, gender_index)
             window._on_body_beta_val(0.1)
@@ -131,8 +131,8 @@ def check_models(window):
             check_number_edits(window)
             assert window._scene.scene.has_geometry('__skeleton__')
             assert window._skeleton_button.is_on and window._labels_button.is_on
-            assert len(window._joint_geometry_radii) == len(AppWindow.JOINTS)
-            assert len(window.joint_labels_3d_list) == len(AppWindow.JOINTS)
+            assert len(window._joint_geometry_radii) == len(window.joints)
+            assert len(window.joint_labels_3d_list) == len(window.joints)
             if gender_index == 0:
                 check_ik(window)
             print(f'GUI callbacks passed: {name}-{gender}', flush=True)
