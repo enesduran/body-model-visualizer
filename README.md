@@ -186,3 +186,55 @@ python dictionary with below keys:
 dict_keys(['betas', 'expression', 'gender', 'body_model', 
            'joints', 'body_pose', 'global_orient'])
 ```
+
+### Model interface and checks
+
+All eight model types use `BodyModelWrapper`. `evaluate()` disables gradient
+tracking and returns `MeshData(vertices, joints, faces)` as NumPy arrays. Wrappers
+expose `joint_names`, `joint_parents` (root parent is `-1`), `parameter_names`,
+and `parameter_limits`. Parameter metadata is keyed by pose group; an absent
+limit group uses the viewer's rotation controls. Extra surface landmarks are
+not part of the kinematic tree. `ik_joints()` returns differentiable positions
+in viewer coordinates, and `ik_parameter_masks()` identifies editable pose
+parameters for the shared solver in `inverse_kinematics.py`.
+
+### Inverse kinematics
+
+IK supports SMPL, SMPL-X, MANO, FLAME, SUPR, STAR, ANNY, and MHR:
+
+1. Enable **Drag joints (IK)** in the Pose tab; this also shows the skeleton.
+2. Click and drag a joint marker, then release to fit the pose. On a trackpad,
+   press and hold with one finger while moving it. Turn off Drag joints to orbit
+   the camera. Holding **Q** while dragging is also supported when the viewport has keyboard focus.
+3. Alternatively, select a joint, use **1/2**, **3/4**, or **5/6** to adjust its
+   target along X, Y, or Z, and click **Run IK** in the Pose tab.
+
+IK optimizes joint/landmark positions while holding body shape, facial
+expression, root rotation, and translation fixed. Other points act as soft
+anchors, so nearby joints can move to reach a target. MHR's native pose limits
+are enforced and its scale/bone-length controls are excluded. Other models use
+their existing rotational parameterizations and a penalty for changing the
+current pose, without additional anatomical joint-limit data. FLAME fits head,
+jaw, and eye articulation to its joint/landmark targets; it does not generate
+new facial expressions. A fixed root or an unreachable target may retain some
+position error, which is shown in the status message.
+
+Run the regression tests in the configured application environment:
+
+```shell
+python -m unittest discover -s tests -v
+```
+
+To exercise model switching, shape and pose controls, skeletons, joint labels,
+and IK in an automatically closed GUI window (requires local model assets and
+a desktop session):
+
+```shell
+python tests/gui_smoke.py
+```
+
+Run numerical IK checks against all eight models (requires local assets):
+
+```shell
+python tests/ik_models.py
+```

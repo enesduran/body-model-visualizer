@@ -42,12 +42,6 @@ import scipy.spatial.transform.rotation as R
 import open3d.visualization.rendering as rendering
 import roma
 from collections import namedtuple
-import time
-# import supr as SUPR
-from SUPR.supr.pytorch.supr import SUPR
-
-# import star as STAR ?
-from STAR.star.pytorch.star import STAR
 #from anny.src.anny.skinning.warp_skinning import grad_or_none
 
 # import anny (es soll die lokale version benutzen)
@@ -58,21 +52,12 @@ from anny.models.full_model import create_model
 
 from utils import (
     get_checkerboard_plane,
-    smpl_joint_names,
-    smplx_body_joint_names,
-    hand_joint_names,
     LEFT_HAND_KEYPOINT_NAMES,
     RIGHT_HAND_KEYPOINT_NAMES,
     HEAD_KEYPOINT_NAMES,
-    FLAME_KEYPOINT_NAMES,
     FOOT_KEYPOINT_NAMES,
-    SMPL_NAMES,
-    SMPLX_NAMES,
-    MANO_NAMES,
-    STAR_NAMES,
-    BONE_NAMES
 )
-from simple_ik import simple_ik_solver
+from inverse_kinematics import solve_ik
 
 
 isMacOS = (platform.system() == "Darwin")
@@ -297,9 +282,7 @@ class AppWindow:
     # for mouse dragging joint feature
     IS_DRAGGING = False
     DRAG_DEPTH = None
-    DRAG_JOINT = None
     DRAG_KEY_PRESSED = False
-    DRAG_START_TIME = None
 
     DEFAULT_IBL = "default"
 
@@ -515,58 +498,9 @@ class AppWindow:
         }
     }
 
-    JOINT_NAMES = {
-        'SMPL': {
-            'global_orient': ['root'],
-            'body_pose': smpl_joint_names,
-        },
-        'SMPLX': {
-            'global_orient': ['root'],
-            'body_pose': smplx_body_joint_names,
-            'left_hand_pose': hand_joint_names,
-            'right_hand_pose': hand_joint_names,
-            'jaw_pose': ['jaw'],
-            'leye_pose': ['leye'],
-            'reye_pose': ['reye'],
-        },
-        'MANO': {
-            'global_orient': ['root'],
-            'hand_pose': hand_joint_names,
-        },
-        'FLAME': {
-            'global_orient': ['root'],
-            'jaw_pose': ['jaw'],
-            'neck_pose': ['neck'],
-            'leye_pose': ['leye'],
-            'reye_pose': ['reye'],
-        },
-        'SUPR': {
-            'pose': SMPLX_NAMES,
-            'trans': ["pelvis"]
-        },
-        'STAR': {
-            'pose': STAR_NAMES,  # doch smpl
-            'trans': ["pelvis"]
-        },
-        'ANNY': {
-            'pose': BONE_NAMES,
-            'trans': []
-        },
-        'MHR' : {
-            'model_parameters' : [str(i) for i in range(204)]
-
-        }
-    }
-
-    KEYPOINT_NAMES = {
-        'SMPL': SMPL_NAMES,
-        'SMPLX': SMPLX_NAMES,
-        'MANO': MANO_NAMES,
-        'FLAME': FLAME_KEYPOINT_NAMES,
-        'SUPR': SMPLX_NAMES,
-        'STAR': SMPL_NAMES,
-        'ANNY': BONE_NAMES,
-    }
+    # Populated from wrapper metadata when models are loaded.
+    JOINT_NAMES = {}
+    KEYPOINT_NAMES = {}
 
     JOINTS = None
     SELECTED_JOINT = None
@@ -576,12 +510,16 @@ class AppWindow:
     GROUND_OFFSET = None
 
     def __init__(self, width, height):
+        # Model selection during construction already refreshes the scene.
+        self.joint_labels_3d_list = []
+        self._joint_geometry_radii = {}
+        self._ik_target_dirty = False
         self.settings = Settings()
         resource_path = gui.Application.instance.resource_path
         self.settings.new_ibl_name = resource_path + "/" + AppWindow.DEFAULT_IBL
 
         self.window = gui.Application.instance.create_window(
-            "Open3D", width, height)
+            "Body Model Visualizer", width, height)
         w = self.window  # to make the code more concise
 
         # 3D widget
@@ -598,17 +536,21 @@ class AppWindow:
         self.em = em
         separation_height = int(round(0.5 * em))
 
-        # Widgets are laid out in layouts: gui.Horiz, gui.Vert,
-        # gui.CollapsableVert, and gui.VGrid. By nesting the layouts we can
-        # achieve complex designs. Usually we use a vertical layout as the
-        # topmost widget, since widgets tend to be organized from top to bottom.
-        # Within that, we usually have a series of horizontal layouts for each
-        # row. All layouts take a spacing parameter, which is the spacing
-        # between items in the widget, and a margins parameter, which specifies
-        # the spacing of the left, top, right, bottom margins. (This acts like
-        # the 'padding' property in CSS.)
-        self._settings_panel = gui.Vert(
-            0, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        self._settings_panel = gui.TabControl()
+        self.model_settings = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
+        self._pose_settings = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
+        self._display_settings = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
+        self._settings_panel.add_tab("Model", self.model_settings)
+        self._settings_panel.add_tab("Pose", self._pose_settings)
+        self._settings_panel.add_tab("Display", self._display_settings)
+        self._settings_panel.set_on_selected_tab_changed(
+            lambda index: self.window.set_needs_layout())
+        self._transform_settings = gui.CollapsableVert(
+            "Global transform", 0.25 * em, gui.Margins(0, 0, 0, 0))
+        self._transform_settings.set_is_open(False)
 
         # Create a collapsable vertical widget, which takes up enough vertical
         # space for all its children when open, but only enough for text when
@@ -694,8 +636,6 @@ class AppWindow:
         view_ctrls.add_fixed(separation_height)
         view_ctrls.add_child(gui.Label("Lighting profiles"))
         view_ctrls.add_child(self._profiles)
-        self._settings_panel.add_fixed(separation_height)
-        self._settings_panel.add_child(view_ctrls)
 
         advanced = gui.CollapsableVert("Advanced lighting", 0,
                                        gui.Margins(em, 0, 0, 0))
@@ -748,8 +688,6 @@ class AppWindow:
         advanced.add_child(gui.Label("Sun (Directional light)"))
         advanced.add_child(grid)
 
-        self._settings_panel.add_fixed(separation_height)
-        self._settings_panel.add_child(advanced)
 
         material_settings = gui.CollapsableVert("Material settings", 0,
                                                 gui.Margins(em, 0, 0, 0))
@@ -783,17 +721,12 @@ class AppWindow:
         grid.add_child(self._point_size)
         material_settings.add_child(grid)
 
-        self._settings_panel.add_fixed(separation_height)
-        self._settings_panel.add_child(material_settings)
 
         # ----------------------------------- #
         # ------- BODY MODEL SETTINGS ------- #
         # ----------------------------------- #
         self.preload_body_models()
         self._scene.scene.show_ground_plane(self.settings.show_ground, rendering.Scene.GroundPlane(0))
-        self.model_settings = gui.CollapsableVert("Model settings", 0,
-                                                  gui.Margins(em, 0, 0, 0))
-        self.model_settings.set_is_open(True)
 
         self._body_model = gui.Combobox()
         for bm in AppWindow.BODY_MODEL_NAMES:
@@ -882,8 +815,10 @@ class AppWindow:
 
         self._body_pose_reset = gui.Button("Reset pose")
         self._body_pose_ik = gui.Button("Run IK")
+        self._drag_joints = gui.Checkbox("Drag joints (IK)")
+        self._drag_joints.set_on_checked(self._on_drag_joints)
 
-        self._show_joints = gui.Checkbox("Show joints")
+        self._show_joints = gui.Checkbox("Show skeleton")
         self._show_joints.set_on_checked(self._on_show_joints)
 
         self._show_joint_labels = gui.Checkbox("Show joint labels")
@@ -1029,7 +964,7 @@ class AppWindow:
         # new global translation UI
         h = gui.Horiz(0.25 * em)
         h.add_child(gui.Label("Global Translation"))
-        self.model_settings.add_child(h)
+        self._transform_settings.add_child(h)
         grid = gui.VGrid(2, 0.25 * em)
         grid.add_child(gui.Label("Translate X"))
         grid.add_child(self._trans_x)
@@ -1037,15 +972,15 @@ class AppWindow:
         grid.add_child(self._trans_y)
         grid.add_child(gui.Label("Translate Z"))
         grid.add_child(self._trans_z)
-        self.model_settings.add_child(grid)
+        self._transform_settings.add_child(grid)
         h = gui.Horiz(0.25 * em)
         h.add_child(self._trans_reset)
-        self.model_settings.add_child(h)
+        self._transform_settings.add_child(h)
 
         # new global rotation UI
         self._global_rotation_header_row = gui.Horiz(0.25 * em)
         self._global_rotation_header_row.add_child(gui.Label("Global Rotation"))
-        self.model_settings.add_child(self._global_rotation_header_row)
+        self._transform_settings.add_child(self._global_rotation_header_row)
         self._global_rotation_grid = gui.VGrid(2, 0.25 * em)
         self._global_rotation_grid.add_child(gui.Label("Rotate X"))
         self._global_rotation_grid.add_child(self._rot_x)
@@ -1053,10 +988,10 @@ class AppWindow:
         self._global_rotation_grid.add_child(self._rot_y)
         self._global_rotation_grid.add_child(gui.Label("Rotate Z"))
         self._global_rotation_grid.add_child(self._rot_z)
-        self.model_settings.add_child(self._global_rotation_grid)
+        self._transform_settings.add_child(self._global_rotation_grid)
         self._global_rotation_reset_row = gui.Horiz(0.25 * em)
         self._global_rotation_reset_row.add_child(self._rot_reset)
-        self.model_settings.add_child(self._global_rotation_reset_row)
+        self._transform_settings.add_child(self._global_rotation_reset_row)
 
         self._expression_grid = gui.VGrid(2, 0.25 * em)
         self._expression_grid.add_child(gui.Label("Exp Component"))
@@ -1072,48 +1007,48 @@ class AppWindow:
 
         self.model_settings.add_fixed(0.5 * em)
 
-        # show joints button
+        # show skeleton checkbox
         h = gui.Horiz(0.25 * em)  # row 2
         h.add_child(self._show_joints)
         h.add_child(self._show_joint_labels)
-        self.model_settings.add_child(h)
+        self._display_settings.add_child(h)
 
         # abstand hinzufuegen
-        self.model_settings.add_fixed(em)
+        self._display_settings.add_fixed(em)
 
         # transparency slider
         h = gui.Horiz(0.25 * em)
-        self.model_settings.add_child(h)
+        self._display_settings.add_child(h)
         grid = gui.VGrid(2, 0.25 * em)
         grid.add_child(gui.Label("Transparency"))
         grid.add_child(self._transparency)
-        self.model_settings.add_child(grid)
+        self._display_settings.add_child(grid)
 
-        self.model_settings.add_fixed(0.5 * em)
+        self._display_settings.add_fixed(0.5 * em)
 
         h = gui.Horiz(0.25 * em)
         h.add_child(self._transparency_reset)
-        self.model_settings.add_child(h)
+        self._display_settings.add_child(h)
 
-        self.model_settings.add_fixed(em)
+        self._display_settings.add_fixed(em)
 
         # camera reset button
         h = gui.Horiz(0.25 * em)
         h.add_child(self._camera_reset)
-        self.model_settings.add_child(h)
+        self._display_settings.add_child(h)
 
         # abstand hinzufuegen
-        self.model_settings.add_fixed(em)
+        self._display_settings.add_fixed(em)
 
         self._body_pose_comp_grid.add_child(self._body_pose_comp_label)
         self._body_pose_comp_grid.add_child(self._body_pose_comp)
-        self.model_settings.add_child(self._body_pose_comp_grid)
+        self._pose_settings.add_child(self._body_pose_comp_grid)
 
         self._joint_grid = gui.VGrid(2, 0.25 * em)
         self._body_pose_joint_label = gui.Label("Joint id:")
         self._joint_grid.add_child(self._body_pose_joint_label)
         self._joint_grid.add_child(self._body_pose_joint)
-        self.model_settings.add_child(self._joint_grid)
+        self._pose_settings.add_child(self._joint_grid)
 
         self._anny_grid = gui.VGrid(2, 0.25 * em)
         self._anny_region_label = gui.Label("Anny Region")
@@ -1125,9 +1060,9 @@ class AppWindow:
         self._anny_bone_label = gui.Label("Anny Bone")
         self._anny_grid.add_child(self._anny_bone_label)
         self._anny_grid.add_child(self._anny_bone)
-        self.model_settings.add_child(self._anny_grid)
+        self._pose_settings.add_child(self._anny_grid)
 
-        self.model_settings.add_fixed(0.5 * em)
+        self._pose_settings.add_fixed(0.5 * em)
 
         self._rot_grid = gui.VGrid(2, 0.25 * em)
         self._rot_x_label = gui.Label("rot_x")
@@ -1139,27 +1074,31 @@ class AppWindow:
         self._rot_z_label = gui.Label("rot_z")
         self._rot_grid.add_child(self._rot_z_label)
         self._rot_grid.add_child(self._body_pose_joint_z)
-        self.model_settings.add_child(self._rot_grid)
+        self._pose_settings.add_child(self._rot_grid)
 
         self._mhr_grid = gui.VGrid(2, 0.25 * em)
         self._mhr_grid.add_child(gui.Label("value"))
         self._mhr_grid.add_child(self._body_pose_joint_val)
-        self.model_settings.add_child(self._mhr_grid)
+        self._pose_settings.add_child(self._mhr_grid)
 
-        self.model_settings.add_fixed(0.5 * em)
+        self._pose_settings.add_fixed(0.5 * em)
 
         h = gui.Horiz(0.25 * em)  # row 2
         h.add_child(self._body_pose_reset)
         # h.add_child(gui.VectorEdit())
-        self.model_settings.add_child(h)
+        self._pose_settings.add_child(h)
 
         h = gui.Horiz(0.25 * em)  # row 2
         h.add_child(self._body_pose_ik)
         # h.add_child(gui.VectorEdit())
-        self.model_settings.add_child(h)
+        self._pose_settings.add_child(h)
 
-        self._settings_panel.add_fixed(separation_height)
-        self._settings_panel.add_child(self.model_settings)
+        self._pose_settings.add_child(self._drag_joints)
+        self._pose_settings.add_child(gui.Label("Enable Drag joints, then drag a marker."))
+        self._pose_settings.add_child(self._transform_settings)
+        self._display_settings.add_child(view_ctrls)
+        self._display_settings.add_child(material_settings)
+        self._display_settings.add_child(advanced)
         self._set_model_specific_ui_visibility(self._body_model.selected_text)
 
 
@@ -1167,18 +1106,7 @@ class AppWindow:
         self.info = gui.Label("")
         self.info.visible = False
 
-        self.joint_label_3d = gui.Label3D("", [0,0,0])
-        self.joint_labels_3d_list = []
-        # self.joint_label_3d.visible = False
-
-
-        # Normally our user interface can be children of all one layout (usually
-        # a vertical layout), which is then the only child of the window. In our
-        # case we want the scene to take up all the space and the settings panel
-        # to go above it. We can do this custom layout by providing an on_layout
-        # callback. The on_layout callback should set the frame
-        # (position + size) of every child correctly. After the callback is
-        # done the window will layout the grandchildren.
+        # Reserve a separate viewport and full-height tabbed sidebar.
         w.set_on_layout(self._on_layout)
         w.add_child(self._scene)
         w.add_child(self._settings_panel)
@@ -1290,18 +1218,12 @@ class AppWindow:
         self._point_size.double_value = self.settings.material.point_size
 
     def _on_layout(self, layout_context):
-        # The on_layout callback should set the frame (position + size) of every
-        # child correctly. After the callback is done the window will layout
-        # the grandchildren.
         r = self.window.content_rect
-        self._scene.frame = r
-        width = 17 * layout_context.theme.font_size
-        height = min(
-            r.height,
-            self._settings_panel.calc_preferred_size(
-                layout_context, gui.Widget.Constraints()).height)
-        self._settings_panel.frame = gui.Rect(r.get_right() - width, r.y, width,
-                                              height)
+        width = min(22 * layout_context.theme.font_size, int(r.width * 0.45))
+        sidebar_width = width if self._settings_panel.visible else 0
+        self._scene.frame = gui.Rect(r.x, r.y, r.width - sidebar_width, r.height)
+        self._settings_panel.frame = gui.Rect(
+            r.get_right() - width, r.y, width, r.height)
 
         pref = self.info.calc_preferred_size(layout_context,
                                              gui.Widget.Constraints())
@@ -1343,35 +1265,38 @@ class AppWindow:
         self.settings.show_ground = show
         self._apply_settings()
 
+    def _active_model(self):
+        bm = self._body_model.selected_text
+        gender = self._body_model_gender.selected_text
+        return AppWindow.PRELOADED_BODY_MODELS[f'{bm.lower()}-{gender.lower()}']
+
     def _current_joint_display_names(self):
         joints = AppWindow.JOINTS
         joint_count = 0 if joints is None else joints.shape[0]
-        joint_names = list(AppWindow.KEYPOINT_NAMES[self._body_model.selected_text])
-        if self._body_model.selected_text == "ANNY":
-            joint_names = list(AppWindow.JOINT_NAMES["ANNY"]["pose"])
+        joint_names = list(self._active_model().joint_names)
         if len(joint_names) < joint_count:
             joint_names.extend(str(i) for i in range(len(joint_names), joint_count))
         return joint_names
 
     def _on_show_joint_labels(self, show):
-        if hasattr(self, "joint_label_3d"):
-            self._scene.remove_3d_label(self.joint_label_3d)
-        if hasattr(self, "joint_labels_3d_list"):
-            for label3d in self.joint_labels_3d_list:
-                self._scene.remove_3d_label(label3d)
-        if show:
+        for label3d in self.joint_labels_3d_list:
+            self._scene.remove_3d_label(label3d)
+        self.joint_labels_3d_list.clear()
+        if show and AppWindow.JOINTS is not None:
             joint_names = self._current_joint_display_names()
-            try:
-                for i in range(AppWindow.JOINTS.shape[0]):
-                    self.joint_labels_3d_list.append(
-                        self._scene.add_3d_label(AppWindow.JOINTS[i], joint_names[i])
-                    )
-            except Exception as e:
-                print(e)
-        else:
-            if hasattr(self, "joint_labels_3d_list"):
-                for label3d in self.joint_labels_3d_list:
-                    self._scene.remove_3d_label(label3d)
+            for position, name in zip(AppWindow.JOINTS, joint_names):
+                self.joint_labels_3d_list.append(
+                    self._scene.add_3d_label(position, name)
+                )
+
+    def _skeleton_edges(self, num_joints):
+        """Use the active model's kinematic tree, excluding extra landmarks."""
+        return np.asarray([
+            [int(parent), child]
+            for child, parent in enumerate(self._active_model().joint_parents)
+            if child < num_joints and 0 <= int(parent) < num_joints
+            and int(parent) != child
+        ], dtype=np.int32).reshape(-1, 2)
 
     def _on_show_joints(self, show, update_transparency=True):
         bm = self._body_model.selected_text
@@ -1390,33 +1315,37 @@ class AppWindow:
         joints = AppWindow.JOINTS
         num_joints = joints.shape[0] if joints is not None else 0
 
+        if self._scene.scene.has_geometry("__skeleton__"):
+            self._scene.scene.remove_geometry("__skeleton__")
+        if show and num_joints:
+            edges = self._skeleton_edges(num_joints)
+            if len(edges):
+                skeleton = o3d.geometry.LineSet(
+                    o3d.utility.Vector3dVector(joints),
+                    o3d.utility.Vector2iVector(edges),
+                )
+                skeleton.paint_uniform_color([0.7, 0.3, 0.3])
+                bone_material = rendering.MaterialRecord()
+                bone_material.shader = "unlitLine"
+                bone_material.line_width = 4.0
+                self._scene.scene.add_geometry(
+                    "__skeleton__", skeleton, bone_material
+                )
 
-        for i in range(300):
-            if self._scene.scene.has_geometry(f"__joints_{i}__"):
+
+        # Keep spheres between updates; remove only joints no longer displayed.
+        for i in list(self._joint_geometry_radii):
+            if not show or i >= num_joints:
                 self._scene.scene.remove_geometry(f"__joints_{i}__")
+                del self._joint_geometry_radii[i]
 
         green = [0.3, 0.7, 0.3, 1.0]
         red = [0.7, 0.3, 0.3, 1.0]
-        if bm == "ANNY":
-            hand_radius = 0.01
-            foot_radius = 0.01
-            head_radius = 0.004
-            body_radius = 0.025
-        elif bm == "MHR":
-            hand_radius = 0.01
-            foot_radius = 0.01
-            head_radius = 0.004
-            body_radius = 0.025
-        else:
-            hand_radius = 0.01
-            foot_radius = 0.01
-            head_radius = 0.004
-            body_radius = 0.025
-        # joint_names = AppWindow.KEYPOINT_NAMES[self._body_model.selected_text]
+        hand_radius = foot_radius = 0.01
+        head_radius = 0.004
+        body_radius = 0.025
+        joint_names = self._current_joint_display_names()
 
-        
-        joint_names = AppWindow.KEYPOINT_NAMES.get(bm, [])
-        
         mat = rendering.MaterialRecord()
         mat.base_color = red
         mat.shader = "defaultLit"
@@ -1468,33 +1397,19 @@ class AppWindow:
                 transform = np.eye(4)
                 transform[:3, 3] = joints[i]
 
-                if self._scene.scene.has_geometry(f"__joints_{i}__"):
-                    self._scene.scene.set_geometry_transform(f"__joints_{i}__", transform)
-                    self._scene.scene.modify_geometry_material(f"__joints_{i}__", current_mat)
+                geometry_name = f"__joints_{i}__"
+                if self._joint_geometry_radii.get(i) != radius:
+                    if i in self._joint_geometry_radii:
+                        self._scene.scene.remove_geometry(geometry_name)
+                    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
+                    sphere.compute_vertex_normals()
+                    self._scene.scene.add_geometry(geometry_name, sphere, current_mat)
+                    self._joint_geometry_radii[i] = radius
                 else:
-                    sg = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
-                    sg.compute_vertex_normals()
-                    sg.translate(joints[i])
-                    self._scene.scene.add_geometry(f"__joints_{i}__", sg, current_mat)
-
-                #sg = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
-                #sg.compute_vertex_normals()
-
-                #sg.translate(joints[i])
-                #if (AppWindow.SELECTED_JOINT is not None) and (i == AppWindow.SELECTED_JOINT):
-                #    self._scene.scene.add_geometry(f"__joints_{i}__", sg, mat_selected)
-                #else:
-                #    self._scene.scene.add_geometry(f"__joints_{i}__", sg, mat)
-                # nur joints loeschen die man nicht braucht
-            for i in range(num_joints, 300):
-                if self._scene.scene.has_geometry(f"__joints_{i}__"):
-                    self._scene.scene.remove_geometry(f"__joints_{i}__")
-            # logger.debug(AppWindow.JOINTS[20])
-        else:
- 
-            for i in range(300):
-                if self._scene.scene.has_geometry(f"__joints_{i}__"):
-                    self._scene.scene.remove_geometry(f"__joints_{i}__")
+                    self._scene.scene.modify_geometry_material(geometry_name, current_mat)
+                # Spheres remain centered at their local origin; the transform
+                # supplies the entire world position on every update.
+                self._scene.scene.set_geometry_transform(geometry_name, transform)
 
         self._on_show_joint_labels(self._show_joint_labels.checked)
       
@@ -1784,8 +1699,6 @@ class AppWindow:
             self._body_beta_text.text = f",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].numpy().tolist())
 
         self._body_model_gender.clear_items()
-
-        self._body_model_gender.clear_items()
         for gender in AppWindow.BODY_MODEL_GENDERS[name]:
             self._body_model_gender.add_item(gender)
 
@@ -1809,7 +1722,7 @@ class AppWindow:
             if name == 'MHR':
                 gender = self._body_model_gender.selected_text
                 wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-                lo, hi = wrapper._pose_param_limits[i]
+                lo, hi = wrapper.parameter_limits['model_parameters'][i]
                 if lo == hi:
                     continue
             # Bei SUPR/STAR/ANNY: Root (Index 0) ausblenden (hat eigene Global Rotation Slider)
@@ -1878,7 +1791,7 @@ class AppWindow:
             ji = int(name.split('-')[0])
             gender = self._body_model_gender.selected_text
             wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-            lo, hi = wrapper._pose_param_limits[ji]
+            lo, hi = wrapper.parameter_limits['model_parameters'][ji]
             self._body_pose_joint_val.set_limits(float(lo), float(hi))
             self._body_pose_joint_val.double_value = float(
                 AppWindow.POSE_PARAMS["MHR"]["model_parameters"][0, ji]
@@ -1955,7 +1868,7 @@ class AppWindow:
             ji = int(name.split('-')[0])
             gender = self._body_model_gender.selected_text
             wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-            lo, hi = wrapper._pose_param_limits[ji]
+            lo, hi = wrapper.parameter_limits['model_parameters'][ji]
             self._body_pose_joint_val.set_limits(float(lo), float(hi))
             self._body_pose_joint_val.double_value = float(
                 AppWindow.POSE_PARAMS["MHR"]["model_parameters"][0, ji]
@@ -1971,7 +1884,7 @@ class AppWindow:
             if bm == 'MHR':
                 gender = self._body_model_gender.selected_text
                 wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-                lo, hi = wrapper._pose_param_limits[i]
+                lo, hi = wrapper.parameter_limits['model_parameters'][i]
                 if lo == hi:
                     continue
             # Bei SUPR/STAR/ANNY: Root (Index 0) ausblenden
@@ -2005,7 +1918,8 @@ class AppWindow:
         name = self._anny_phenotype.selected_text
         self._anny_phenotype_values[name] = float(val)
         if self._body_model.selected_text == 'ANNY':
-            self.load_body_model('ANNY')
+            AppWindow.GROUND_OFFSET = None
+            self.load_body_model('ANNY', gender=self._body_model_gender.selected_text)
 
     def _on_anny_reset_shape(self):
         self._anny_phenotype_values = dict(AppWindow.ANNY_PHENOTYPE_DEFAULTS)
@@ -2013,7 +1927,8 @@ class AppWindow:
             self._anny_phenotype.selected_text
         ]
         if self._body_model.selected_text == 'ANNY':
-            self.load_body_model('ANNY')
+            AppWindow.GROUND_OFFSET = None
+            self.load_body_model('ANNY', gender=self._body_model_gender.selected_text)
 
     def _on_body_exp_reset(self):
         self._body_exp_tensor = torch.zeros(1, 10)
@@ -2178,144 +2093,100 @@ class AppWindow:
         if AppWindow.CAM_FIRST is not None:
             self._scene.setup_camera(60, AppWindow.CAM_BOUNDS, AppWindow.CAM_CENTER)
 
+    def _on_drag_joints(self, enabled):
+        if AppWindow.IS_DRAGGING:
+            self._finish_joint_drag()
+        AppWindow.DRAG_KEY_PRESSED = False
+        if enabled:
+            self._show_joints.checked = True
+            self._on_show_joints(True)
+        self._update_label("Drag a joint marker; release to solve IK." if enabled
+                           else "Camera controls restored.")
+
+    def _finish_joint_drag(self):
+        AppWindow.IS_DRAGGING = False
+        AppWindow.DRAG_DEPTH = None
+        self._scene.set_view_controls(gui.SceneWidget.Controls.ROTATE_CAMERA)
+        if self._ik_target_dirty:
+            self._on_run_ik()
+
     def _on_key_widget(self, event):
         if event.key == gui.KeyName.Q:
-            if event.type == gui.KeyEvent.Type.DOWN:
-                AppWindow.DRAG_KEY_PRESSED = True
-            elif event.type == gui.KeyEvent.Type.UP:
-                AppWindow.DRAG_KEY_PRESSED = False
-
-                # IK auslösen wenn wir gerade gedraggt haben
-                if AppWindow.DRAG_DEPTH is not None:
-                    self._scene.set_view_controls(gui.SceneWidget.Controls.ROTATE_CAMERA)
-                    AppWindow.DRAG_DEPTH = None
-                    AppWindow.IS_DRAGGING = False
-
-                    bm = self._body_model.selected_text
-                    bp = self._body_pose_comp.selected_text
-                    if (bm in ['SMPL', 'SMPLX']) and (bp == 'body_pose'):
-                        self._on_run_ik()
+            AppWindow.DRAG_KEY_PRESSED = event.type == gui.KeyEvent.Type.DOWN
+            if not AppWindow.DRAG_KEY_PRESSED and AppWindow.IS_DRAGGING:
+                self._finish_joint_drag()
             return gui.Widget.EventCallbackResult.HANDLED
 
-        key = gui.KeyName(event.key.real).name
-        step = 0.01
-        # logger.debug(f"key {key} is pressed")
-        if (self._show_joints.checked) and \
-                (AppWindow.SELECTED_JOINT is not None) and \
-                (key in ('ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX')):
-            if key == 'ONE':
-                transl = np.array([-step, 0.0, 0.0])
-            elif key == 'TWO':
-                transl = np.array([step, 0.0, 0.0])
-            elif key == 'THREE':
-                transl = np.array([0.0, -step, 0.0])
-            elif key == 'FOUR':
-                transl = np.array([0.0, step, 0.0])
-            elif key == 'FIVE':
-                transl = np.array([0.0, 0.0, -step])
-            elif key == 'SIX':
-                transl = np.array([0.0, 0.0, step])
-
-            AppWindow.JOINTS[AppWindow.SELECTED_JOINT] = AppWindow.JOINTS[AppWindow.SELECTED_JOINT] + transl
-            self._on_show_joints(show=True, update_transparency=False)
+        offsets = {
+            gui.KeyName.ONE: [-0.01, 0, 0], gui.KeyName.TWO: [0.01, 0, 0],
+            gui.KeyName.THREE: [0, -0.01, 0], gui.KeyName.FOUR: [0, 0.01, 0],
+            gui.KeyName.FIVE: [0, 0, -0.01], gui.KeyName.SIX: [0, 0, 0.01],
+        }
+        selected = AppWindow.SELECTED_JOINT
+        if (event.type == gui.KeyEvent.Type.DOWN and self._show_joints.checked
+                and selected is not None and AppWindow.JOINTS is not None
+                and selected < len(AppWindow.JOINTS) and event.key in offsets):
+            AppWindow.JOINTS[selected] += np.asarray(offsets[event.key])
+            self._ik_target_dirty = True
+            self._on_show_joints(True, update_transparency=False)
+            self._update_label('Target moved. Click Run IK to fit the pose.')
             return gui.Widget.EventCallbackResult.HANDLED
         return gui.Widget.EventCallbackResult.IGNORED
 
+    def _project_joint_positions(self):
+        """Return viewport pixels and depth for picking the visible joint markers."""
+        joints = AppWindow.JOINTS
+        camera = self._scene.scene.camera
+        positions = np.column_stack((joints, np.ones(len(joints))))
+        clip = positions @ np.asarray(camera.get_view_matrix()).T
+        clip = clip @ np.asarray(camera.get_projection_matrix()).T
+        valid = clip[:, 3] > 1e-8
+        ndc = clip[:, :3] / np.where(valid, clip[:, 3], 1.)[:, None]
+        frame = self._scene.frame
+        pixels = np.column_stack(((ndc[:, 0] + 1) * frame.width / 2,
+                                  (1 - ndc[:, 1]) * frame.height / 2))
+        depth = (ndc[:, 2] + 1) / 2
+        valid &= np.isfinite(pixels).all(axis=1) & (depth >= 0) & (depth < 1)
+        return pixels, depth, valid
+
     def _on_mouse_widget(self, event):
-        # We could override BUTTON_DOWN without a modifier, but that would
-        # interfere with manipulating the scene.
-
-        # BUTTON_DOWN Event: select joint
-        if event.type == gui.MouseEvent.Type.BUTTON_DOWN and \
-            AppWindow.DRAG_KEY_PRESSED and \
-            self._show_joints.checked:
-
-            bm = self._body_model.selected_text
-            if not (bm in ['SMPL', 'SMPLX']):
-                self._update_label(f'joint dragging not implemented')
+        frame = self._scene.frame
+        x, y = event.x - frame.x, event.y - frame.y
+        if (event.type == gui.MouseEvent.Type.BUTTON_DOWN
+                and (AppWindow.DRAG_KEY_PRESSED or self._drag_joints.checked)
+                and self._show_joints.checked
+                and AppWindow.JOINTS is not None and len(AppWindow.JOINTS)):
+            if not (0 <= x < frame.width and 0 <= y < frame.height):
+                return gui.Widget.EventCallbackResult.IGNORED
+            pixels, depths, valid = self._project_joint_positions()
+            distances = np.sum((pixels - [x, y]) ** 2, axis=1)
+            distances[~valid] = np.inf
+            selected = int(np.argmin(distances))
+            if distances[selected] > max(12., self.em) ** 2:
+                self._update_label('Click a joint marker to select it.')
                 return gui.Widget.EventCallbackResult.HANDLED
-
-            AppWindow.DRAG_START_TIME = time.time()
+            AppWindow.SELECTED_JOINT = selected
             AppWindow.IS_DRAGGING = True
-            AppWindow.DRAG_DEPTH = -1.0
-            self._scene.set_view_controls(gui.SceneWidget.Controls.PICK_POINTS)  # Kamera deaktivieren
-
-            def depth_callback(depth_image):
-                depth_array = np.asarray(depth_image)
-                x = event.x
-                y = event.y
-
-                depth = np.asarray(depth_image)[y, x]
-
-                depth = depth_array[y, x]
-
-                if depth == 1.0:  # clicked on nothing (i.e. the far plane)
-                    AppWindow.IS_DRAGGING = False
-                    AppWindow.DRAG_DEPTH = None
-                    return gui.Widget.EventCallbackResult.HANDLED
-
-                AppWindow.DRAG_DEPTH = depth
-                world = self._scene.scene.camera.unproject(
-                    x, y, depth, depth_array.shape[1],
-                    depth_array.shape[0])
-
-                # find the closest joint to the clicked pos
-                dist = ((AppWindow.JOINTS - np.array([world[0], world[1], world[2]]))**2).sum(1)
-                AppWindow.SELECTED_JOINT = np.argmin(dist)
-
-                jn = AppWindow.KEYPOINT_NAMES[self._body_model.selected_text][AppWindow.SELECTED_JOINT]
-
-                def update_ui():
-                    self._update_label(f'Dragging joint "{jn}"')
-                    self._on_show_joints(show = True, update_transparency=False)
-
-                gui.Application.instance.post_to_main_thread(self.window, update_ui)
-
-            self._scene.scene.scene.render_to_depth_image(depth_callback)
+            AppWindow.DRAG_DEPTH = float(depths[selected])
+            self._scene.set_view_controls(gui.SceneWidget.Controls.PICK_POINTS)
+            name = self._current_joint_display_names()[selected]
+            self._update_label(f'Selected {name}. Drag the marker; release to solve IK.')
+            self._on_show_joints(True, update_transparency=False)
             return gui.Widget.EventCallbackResult.HANDLED
 
-        # Mouse move Event: change joint position
-        if event.type == gui.MouseEvent.Type.MOVE and \
-                AppWindow.DRAG_DEPTH is not None and \
-                AppWindow.DRAG_DEPTH != -1.0 and \
-                AppWindow.SELECTED_JOINT is not None and \
-                AppWindow.DRAG_KEY_PRESSED:
-            #and \
-               # event.buttons == gui.MouseEvent.BUTTON_LEFT:
-
-            x = event.x
-            y = event.y
-
+        if (event.type in (gui.MouseEvent.Type.DRAG, gui.MouseEvent.Type.MOVE)
+                and AppWindow.IS_DRAGGING
+                and AppWindow.DRAG_DEPTH is not None):
             world = self._scene.scene.camera.unproject(
-                x, y, AppWindow.DRAG_DEPTH,
-                self._scene.frame.width,
-                self._scene.frame.height)
-
-            AppWindow.JOINTS[AppWindow.SELECTED_JOINT] = np.array(world[:3])
-            self._on_show_joints(show = True, update_transparency=False)
-
+                x, y, AppWindow.DRAG_DEPTH, frame.width, frame.height)
+            AppWindow.JOINTS[AppWindow.SELECTED_JOINT] = np.asarray(world[:3])
+            self._ik_target_dirty = True
+            self._on_show_joints(True, update_transparency=False)
             return gui.Widget.EventCallbackResult.HANDLED
 
-        # Button up Event: run IK (update Model)
-        if event.type == gui.MouseEvent.Type.BUTTON_UP:
-            elapsed = time.time() - (AppWindow.DRAG_START_TIME or 0)
-
-            if elapsed < 0.3:
-                return gui.Widget.EventCallbackResult.HANDLED
-
-            if not AppWindow.DRAG_KEY_PRESSED:
-                if AppWindow.DRAG_DEPTH is not None:
-                    self._scene.set_view_controls(gui.SceneWidget.Controls.ROTATE_CAMERA)  # Kamera wieder aktiviere
-                    AppWindow.DRAG_DEPTH = None
-                    AppWindow.IS_DRAGGING = False
-
-                    bm = self._body_model.selected_text
-                    bp = self._body_pose_comp.selected_text
-                    if ((bm in ['SMPL', 'SMPLX']) and (bp in ('body_pose'))):
-                        self._on_run_ik()
-
+        if event.type == gui.MouseEvent.Type.BUTTON_UP and AppWindow.IS_DRAGGING:
+            self._finish_joint_drag()
             return gui.Widget.EventCallbackResult.HANDLED
-
         return gui.Widget.EventCallbackResult.IGNORED
 
 
@@ -2328,32 +2199,34 @@ class AppWindow:
         self.window.set_needs_layout()
 
     def _on_run_ik(self):
+        if AppWindow.JOINTS is None:
+            return
         bm = self._body_model.selected_text
-        bp = self._body_pose_comp.selected_text
-
-        if not ((bm in ['SMPL', 'SMPLX']) and (bp in ('body_pose'))):
-            logger.warning('IK is not implemented for this body model')
-            return 0
-
-        gender = self._body_model_gender.selected_text
-        init_pose = copy.deepcopy(AppWindow.POSE_PARAMS[bm][bp])
-
-        target_keypoints = AppWindow.JOINTS[:22][None]
-        target_keypoints = torch.from_numpy(target_keypoints).float()
-        opt_params = simple_ik_solver(
-            model=AppWindow.PRELOADED_BODY_MODELS[f'{bm.lower()}-{gender.lower()}'],
-            target=target_keypoints, init=init_pose, device='cpu',
-            max_iter=50, transl=AppWindow.BODY_TRANSL,
-            betas=self._body_beta_tensor,
-        )
-        opt_params = opt_params.requires_grad_(False)
-        
-        AppWindow.POSE_PARAMS[bm][bp] = opt_params.reshape(1, -1, 3)
-
-        self.load_body_model(
-            self._body_model.selected_text,
-            gender=self._body_model_gender.selected_text,
-        )
+        # Model adapters already include user translation and root rotation.
+        # Only the viewer's ground offset needs to be removed from the targets.
+        targets = AppWindow.JOINTS - np.array([0., AppWindow.GROUND_OFFSET or 0., 0.])
+        try:
+            result = solve_ik(
+                self._active_model(), AppWindow.POSE_PARAMS[bm], targets,
+                self.get_shape_params(), self._body_exp_tensor,
+            )
+        except (ValueError, RuntimeError) as error:
+            logger.exception(f'IK failed for {bm}: {error}')
+            self._update_label(f'IK could not solve this target: {error}')
+            return
+        AppWindow.POSE_PARAMS[bm] = result.parameters
+        self.load_body_model(bm, gender=self._body_model_gender.selected_text)
+        self._sync_pose_joint_sliders()
+        self._sync_global_sliders()
+        if result.initial_error <= 0.0005:
+            self._update_label('Enable Drag joints in Pose and drag a marker, or hold Q while dragging.')
+        elif result.final_error >= result.initial_error * 0.999:
+            self._update_label('Target cannot be reached with the current articulation. Global placement is fixed.')
+        else:
+            self._update_label(
+                f'IK target error: {result.initial_error * 1000:.1f} -> '
+                f'{result.final_error * 1000:.1f} mm')
+        return result
 
     def _reset_rot_sliders(self):
         self._body_pose_joint_x.int_value = 0
@@ -2376,7 +2249,7 @@ class AppWindow:
         if bm == 'MHR':
             gender = self._body_model_gender.selected_text
             wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
-            lo, hi = wrapper._pose_param_limits[ji]
+            lo, hi = wrapper.parameter_limits['model_parameters'][ji]
             self._body_pose_joint_val.set_limits(float(lo), float(hi))
             self._body_pose_joint_val.double_value = float(
                 AppWindow.POSE_PARAMS['MHR']['model_parameters'][0, ji]
@@ -2565,6 +2438,7 @@ class AppWindow:
         self._settings_panel.visible = not self._settings_panel.visible
         gui.Application.instance.menubar.set_checked(
             AppWindow.MENU_SHOW_SETTINGS, self._settings_panel.visible)
+        self.window.set_needs_layout()
 
     def _on_menu_about(self):
         # Show a simple dialog. Although the Dialog is actually a widget, you can
@@ -2576,11 +2450,13 @@ class AppWindow:
         # Add the text
         dlg_layout = gui.Vert(em, gui.Margins(em, em, em, em))
         dlg_layout.add_child(gui.Label("Body Model Visualizer - Help"))
-        dlg_layout.add_child(gui.Label("Select joint: Ctrl+left click"))
+        dlg_layout.add_child(gui.Label("Select / drag: enable Drag joints in Pose, or hold Q"))
+        dlg_layout.add_child(gui.Label("Release the mouse or Q to solve IK"))
         dlg_layout.add_child(gui.Label("-- Move selected Joint --"))
         dlg_layout.add_child(gui.Label("Move -x/+x: 1/2"))
         dlg_layout.add_child(gui.Label("Move -y/+y: 3/4"))
         dlg_layout.add_child(gui.Label("Move -z/+z: 5/6"))
+        dlg_layout.add_child(gui.Label("After key adjustments, click Run IK in Pose"))
         # Add the Ok button. We need to define a callback function to handle
         # the click.
         ok = gui.Button("OK")
@@ -2621,84 +2497,33 @@ class AppWindow:
 
 
     def preload_body_models(self):
-        from smplx import SMPL, SMPLX, MANO, FLAME
-        from Wrapper import wrapper_dict
+        from Wrapper.wrapper_dict import WRAPPER_CLASSES
 
         for body_model in list(AppWindow.BODY_MODEL_NAMES):
+            if body_model not in WRAPPER_CLASSES:
+                logger.warning(f'Skipping unavailable body model wrapper {body_model}')
+                AppWindow.BODY_MODEL_NAMES.remove(body_model)
+                continue
             for gender in AppWindow.BODY_MODEL_GENDERS[body_model]:
                 logger.info(f'Loading {body_model}-{gender}')
-
-                # alter Code für SMPL, SMPLX, MANO und FLAME
-                if body_model in ('SMPL', 'SMPLX', 'MANO', 'FLAME'):
-                    extra_params = {'gender': gender}
-                    if body_model in ('SMPLX', 'MANO', 'FLAME'):
-                        extra_params['use_pca'] = False
-                        extra_params['flat_hand_mean'] = True
-                        extra_params['use_face_contour'] = True
-                    model = eval(body_model.upper())(f'data/body_models/{body_model.lower()}', **extra_params)
-
-                # wrapper-Implementierung fuer alle neuen Modelle + SUPR, STAR und ANNY
-                else:
-                    if body_model not in wrapper_dict.WRAPPER_CLASSES:
-                        logger.warning(f'Skipping unavailable body model wrapper {body_model}')
-                        AppWindow.BODY_MODEL_NAMES.remove(body_model)
-                        break
-                    wrapper = wrapper_dict.WRAPPER_CLASSES[body_model]()
-                    model = wrapper.preload_body_model(gender)
-                    if body_model == "MHR":
-                        AppWindow.JOINT_NAMES["MHR"]["model_parameters"] = wrapper._pose_param_names
-                        AppWindow.KEYPOINT_NAMES['MHR'] = wrapper._joint_names
-
+                model = WRAPPER_CLASSES[body_model]().preload_body_model(gender)
+                AppWindow.JOINT_NAMES[body_model] = model.parameter_names
+                AppWindow.KEYPOINT_NAMES[body_model] = model.joint_names
                 key = f'{body_model.lower()}-{gender.lower()}'
                 AppWindow.PRELOADED_BODY_MODELS[key] = model
         logger.info(f'Loaded body models {AppWindow.PRELOADED_BODY_MODELS.keys()}')
 
-    # @torch.no_grad()
-    def load_body_model(self, body_model='smpl', gender='neutral'):
-        from Wrapper import wrapper_dict
-        self._scene.scene.remove_geometry("__body_model__")
-
-        # alter Code für SMPL, SUPR, SMPLX, MANO und FLAME
-        if body_model in ('SMPL', 'SMPLX', 'MANO', 'FLAME'):
-            model = AppWindow.PRELOADED_BODY_MODELS[f'{body_model.lower()}-{gender.lower()}']
-            # input eingaben
-            input_params = copy.deepcopy(AppWindow.POSE_PARAMS[body_model])
-
-            # SMPL-Familie nutzt "transl" statt "trans"
-            if body_model in ("SMPL", "SMPLX", "MANO", "FLAME") and "trans" in input_params:
-                input_params["transl"] = input_params.pop("trans")
-
-            # berechnung der neuen werte
-            for k, v in input_params.items():
-                input_params[k] = v.reshape(1, -1)
-
-            # Expression nur für Modelle die es unterstützen
-            extra_args = {}
-            if body_model in ('SMPLX', 'FLAME'):
-                extra_args['expression'] = self._body_exp_tensor
-
-            model_output = model(
-                betas=self._body_beta_tensor,
-                **extra_args,
-                **input_params,
-            )
-            verts = model_output.vertices[0].detach().numpy()
-            AppWindow.JOINTS = model_output.joints[0].detach().numpy()
-
-            faces = model.faces
-
-       # wrapper-Implementierung fuer alle neuen Modelle + SUPR, STAR und ANNY
-        else:
-            # parameter von der gui
-            input_params = copy.deepcopy(AppWindow.POSE_PARAMS[body_model])
-            wrapper = AppWindow.PRELOADED_BODY_MODELS[f'{body_model.lower()}-{gender.lower()}']
-
-            # ANNY nutzt Phenotypes (Dict), andere Modelle Betas (Tensor)
-            mesh_data = wrapper.forward(input_params, self.get_shape_params(), expression=self._body_exp_tensor )
-            
-            verts = mesh_data[0]
-            AppWindow.JOINTS = mesh_data[1]
-            faces = mesh_data[2]
+    def load_body_model(self, body_model=None, gender=None):
+        body_model = body_model or self._body_model.selected_text
+        gender = gender or self._body_model_gender.selected_text
+        model = AppWindow.PRELOADED_BODY_MODELS[f'{body_model.lower()}-{gender.lower()}']
+        mesh_data = model.evaluate(
+            AppWindow.POSE_PARAMS[body_model], self.get_shape_params(),
+            expression=self._body_exp_tensor,
+        )
+        verts, joints, faces = mesh_data
+        # Viewer offsets must not mutate arrays owned by the model.
+        AppWindow.JOINTS = joints.copy()
 
         # bauen des 3D-Mesh
         mesh = o3d.geometry.TriangleMesh()
@@ -2718,7 +2543,12 @@ class AppWindow:
         ground_offset = AppWindow.GROUND_OFFSET
         mesh.translate([0, ground_offset, 0])
         AppWindow.JOINTS += np.array([0, ground_offset, 0])
+        self._ik_target_dirty = False
+        AppWindow.IS_DRAGGING = False
+        AppWindow.DRAG_DEPTH = None
 
+        if self._scene.scene.has_geometry("__body_model__"):
+            self._scene.scene.remove_geometry("__body_model__")
         self._scene.scene.add_geometry("__body_model__", mesh,
                                         self.settings.material)
         bounds = mesh.get_axis_aligned_bounding_box()
