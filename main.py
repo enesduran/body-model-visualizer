@@ -422,163 +422,134 @@ class AppWindow:
         self._ik_target_dirty = False
         self.window = gui.Application.instance.create_window(
             "Body Model Visualizer", width, height)
-        w = self.window  # to make the code more concise
-
-        # 3D widget
-        self._scene = gui.SceneWidget()
-        self._scene.scene = rendering.Open3DScene(w.renderer)
-
-        # ---- Settings panel ----
-        # Rather than specifying sizes in pixels, which may vary in size based
-        # on the monitor, especially on macOS which has 220 dpi monitors, use
-        # the em-size. This way sizings will be proportional to the font size,
-        # which will create a more visually consistent size across platforms.
+        w = self.window
+        # Sizes are given in em so they scale with the font on high-dpi displays.
         em = w.theme.font_size
         self.em = em
 
+        self._scene = gui.SceneWidget()
+        self._scene.scene = rendering.Open3DScene(w.renderer)
         # View, lighting and material controls (Open3D viewer boilerplate).
         self.viewer = ViewerSettingsPanel(self._scene, em)
         self.settings = self.viewer.settings
 
-        self._settings_panel = gui.TabControl()
-        self.model_settings = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
-        self._display_settings = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em))
-        self._settings_panel.add_tab("Model", self.model_settings)
-        self._settings_panel.add_tab("Display", self._display_settings)
-        self._settings_panel.set_on_selected_tab_changed(
-            lambda index: self.window.set_needs_layout())
-
-        def section(title, is_open=True):
-            widget = gui.CollapsableVert(title, 0.25 * em, gui.Margins(0, 0, 0, 0))
-            widget.set_is_open(is_open)
-            return widget
-
-        # Model tab: selection, then shape, expression, pose and placement.
-        self._shape_section = section("Shape")
-        self._expression_section = section("Expression")
-        self._pose_settings = section("Pose")
-        self._transform_settings = section("Global transform", is_open=False)
-
-        # ----------------------------------- #
-        # ------- BODY MODEL SETTINGS ------- #
-        # ----------------------------------- #
         self.preload_body_models()
-        self._scene.scene.show_ground_plane(self.settings.show_ground, rendering.Scene.GroundPlane(0))
+        self._scene.scene.show_ground_plane(self.settings.show_ground,
+                                            rendering.Scene.GroundPlane(0))
+
+        self._create_model_controls(em)
+        self._create_anny_controls()
+        self._settings_panel = self._build_sidebar(em)
+        self._toolbar = self._build_toolbar(em)
+        # Initial state: first model and its first pose group. This renders the
+        # mesh and applies the model-specific control visibility.
+        first_model = AppWindow.BODY_MODEL_NAMES[0]
+        self._on_body_model(first_model, 0)
+        self._on_body_pose_comp(list(AppWindow.POSE_PARAMS[first_model].keys())[0], 0)
+        self._connect_callbacks()
+
+        self.info = gui.Label("")
+        self.info.visible = False
+
+        # A viewport with a floating toolbar, plus a full-height tabbed sidebar.
+        w.set_on_layout(self._on_layout)
+        w.add_child(self._scene)
+        w.add_child(self._toolbar)
+        w.add_child(self._settings_panel)
+        w.add_child(self.info)
+
+        self._build_menu()
+        self.viewer.apply()
+
+    # ------------------------------------------------------------------ #
+    # Construction helpers
+    # ------------------------------------------------------------------ #
+    def _create_model_controls(self, em):
+        """Create the model, shape, expression, pose and transform widgets."""
+        first_model = AppWindow.BODY_MODEL_NAMES[0]
 
         self._body_model = gui.Combobox()
         for bm in AppWindow.BODY_MODEL_NAMES:
             self._body_model.add_item(bm)
-
         self._body_model_gender = gui.Combobox()
-        for gender in AppWindow.BODY_MODEL_GENDERS[AppWindow.BODY_MODEL_NAMES[0]]:
+        for gender in AppWindow.BODY_MODEL_GENDERS[first_model]:
             self._body_model_gender.add_item(gender)
 
-        # ------- BODY MODEL BETAS SETTINGS ------- #
+        # Shape (betas, or ANNY phenotypes)
         self._body_model_shape_comp = gui.Combobox()
-        for i in range(AppWindow.BODY_MODEL_N_BETAS[AppWindow.BODY_MODEL_NAMES[0]]):
+        for i in range(AppWindow.BODY_MODEL_N_BETAS[first_model]):
             self._body_model_shape_comp.add_item(f'{i+1:02d}')
-
         self._body_beta_val = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
         self._body_beta_val.set_limits(-5.0, 5.0)
         self._body_beta_tensor = torch.zeros(1, 10)
-        self._anny_phenotype_values = dict(AppWindow.ANNY_PHENOTYPE_DEFAULTS) #??
+        self._anny_phenotype_values = dict(AppWindow.ANNY_PHENOTYPE_DEFAULTS)
         self._body_beta_reset = gui.Button("Reset shape")
-
-        # new global translation gui slider
-        self._trans_x = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
-        self._trans_x.set_limits(-5.0, 5.0)
-        self._trans_y = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
-        self._trans_y.set_limits(-5.0, 5.0)
-        self._trans_z = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
-        self._trans_z.set_limits(-5.0, 5.0)
-        self._trans_reset = gui.Button("Reset translation")
-
-        # new global rotation gui slider
-        self._rot_x = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
-        self._rot_x.set_limits(-5.0, 5.0)
-        self._rot_y = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
-        self._rot_y.set_limits(-5.0, 5.0)
-        self._rot_z = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
-        self._rot_z.set_limits(-5.0, 5.0)
-        self._rot_reset = gui.Button("Reset rotation")
-
-        # new transparency slider
-        self._transparency = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
-        self._transparency.set_limits(0.0, 1.0)
-        self._transparency.double_value = 0.0
-        self._transparency_reset = gui.Button("Reset transparency")
-
-        # camera reset button
-        self._camera_reset = gui.Button("Reset camera")
-
         self._body_beta_text = gui.Label("Betas")
-        self._body_beta_text.text = f",".join(f'{x:.1f}'for x in self._body_beta_tensor[0].numpy().tolist())
+        self._body_beta_text.text = ",".join(f'{x:.1f}' for x in self._body_beta_tensor[0].tolist())
 
-        # ------- BODY MODEL EXPRESSION SETTINGS ------- #
+        # Expression (SMPL-X, FLAME, MHR)
         self._body_model_exp_comp = gui.Combobox()
         for i in range(10):
             self._body_model_exp_comp.add_item(f'{i + 1:02d}')
-
         self._body_exp_val = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
         self._body_exp_val.set_limits(-5.0, 5.0)
         self._body_exp_tensor = torch.zeros(1, 10)
         self._body_exp_reset = gui.Button("Reset expression")
-
         self._body_exp_text = gui.Label("Expression")
-        self._body_exp_text.text = f",".join(f'{x:.1f}' for x in self._body_exp_tensor[0].numpy().tolist())
+        self._body_exp_text.text = ",".join(f'{x:.1f}' for x in self._body_exp_tensor[0].tolist())
 
-
-        # ------- BODY MODEL POSE SETTINGS ------- #
+        # Pose: group, joint, per-axis Euler sliders (or one scalar for MHR)
         self._body_pose_comp = gui.Combobox()
-        for k in AppWindow.POSE_PARAMS[AppWindow.BODY_MODEL_NAMES[0]].keys():
-            if k == 'trans':
-                continue
-            self._body_pose_comp.add_item(k)
-
+        for k in AppWindow.POSE_PARAMS[first_model].keys():
+            if k != 'trans':
+                self._body_pose_comp.add_item(k)
         self._body_pose_comp_grid = gui.VGrid(2, 0.25 * em)
         self._body_pose_comp_label = gui.Label("Pose group")
         self._body_pose_joint = gui.Combobox()
-
         self._body_pose_joint_x = SliderWithEdit(gui.Slider.INT, em)
-        self._body_pose_joint_x.set_limits(-180, 180)
         self._body_pose_joint_y = SliderWithEdit(gui.Slider.INT, em)
-        self._body_pose_joint_y.set_limits(-180, 180)
         self._body_pose_joint_z = SliderWithEdit(gui.Slider.INT, em)
-        self._body_pose_joint_z.set_limits(-180, 180)
-
-        # new slider for MHR
+        for slider in (self._body_pose_joint_x, self._body_pose_joint_y, self._body_pose_joint_z):
+            slider.set_limits(-180, 180)
         self._body_pose_joint_val = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
         self._body_pose_joint_val.set_limits(-1.0, 1.0)
-
         self._body_pose_reset = gui.Button("Reset pose")
         self._body_pose_ik = gui.Button("Run IK")
+
+        # Global transform
+        self._trans_x = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
+        self._trans_y = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
+        self._trans_z = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
+        self._rot_x = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
+        self._rot_y = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
+        self._rot_z = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=3)
+        for slider in (self._trans_x, self._trans_y, self._trans_z,
+                       self._rot_x, self._rot_y, self._rot_z):
+            slider.set_limits(-5.0, 5.0)
+        self._trans_reset = gui.Button("Reset translation")
+        self._rot_reset = gui.Button("Reset rotation")
+
+        # Display
+        self._transparency = SliderWithEdit(gui.Slider.DOUBLE, em, decimals=2)
+        self._transparency.set_limits(0.0, 1.0)
+        self._transparency.double_value = 0.0
+        self._transparency_reset = gui.Button("Reset transparency")
+        self._camera_reset = gui.Button("Reset camera")
+
+        # Skeleton, labels and drag mode are toggled from the toolbar; these
+        # checkboxes hold the state and are not placed in the sidebar.
         self._drag_joints = gui.Checkbox("Drag joints (IK)")
-        self._drag_joints.set_on_checked(self._on_drag_joints)
-
         self._show_joints = gui.Checkbox("Show skeleton")
-        self._show_joints.set_on_checked(self._on_show_joints)
-
         self._show_joint_labels = gui.Checkbox("Show joint labels")
-        self._show_joint_labels.set_on_checked(self._on_show_joint_labels)
 
-        # ------- ANNY MODEL SETTINGS ------- #
-        anny_settings = gui.CollapsableVert("Anny Settings", 0.25 * em,
-                                         gui.Margins(em, 0, 0, 0))
-
-        anny_settings.set_is_open(False)
-        # ANNY model type selection
+    def _create_anny_controls(self):
+        """ANNY-specific selectors: rig variants, phenotypes and the bone hierarchy."""
         self._anny_model_type = gui.Combobox()
         for model_type in AppWindow.ANNY_MODEL_TYPES:
             self._anny_model_type.add_item(model_type)
-        # ANNY rig selection
         self._anny_rig = gui.Combobox()
         for rig in AppWindow.ANNY_RIGS:
             self._anny_rig.add_item(rig)
-
-
-        # ANNY phenotype selection
         self._anny_phenotype = gui.Combobox()
         for name in AppWindow.ANNY_PHENOTYPE_NAMES:
             self._anny_phenotype.add_item(name)
@@ -594,19 +565,10 @@ class AppWindow:
         self._anny_bone = gui.Combobox()
         self._populate_anny_regions()
 
-
-        self._on_body_model(AppWindow.BODY_MODEL_NAMES[0], 0)
-        self._on_body_pose_comp(list(AppWindow.POSE_PARAMS[AppWindow.BODY_MODEL_NAMES[0]].keys())[0], 0)
+    def _connect_callbacks(self):
+        """Wire every control to its handler (after the initial model is loaded)."""
         self._body_model.set_on_selection_changed(self._on_body_model)
         self._body_model_gender.set_on_selection_changed(self._on_body_model_gender)
-
-        self._anny_phenotype.set_on_selection_changed(self._on_anny_phenotype_comp)
-        self._anny_phenotype_val.set_on_value_changed(self._on_anny_phenotype_val)
-        self._anny_reset_shape.set_on_clicked(self._on_anny_reset_shape)
-        self._anny_region.set_on_selection_changed(self._on_anny_region)
-        self._anny_group.set_on_selection_changed(self._on_anny_group)
-        self._anny_bone.set_on_selection_changed(self._on_anny_bone)
-
 
         self._body_beta_val.set_on_value_changed(self._on_body_beta_val)
         self._body_beta_reset.set_on_clicked(self._on_body_beta_reset)
@@ -621,179 +583,143 @@ class AppWindow:
         for axis, slider in enumerate((self._body_pose_joint_x, self._body_pose_joint_y,
                                        self._body_pose_joint_z)):
             slider.set_on_value_changed(partial(self._on_body_pose_joint_axis, axis))
-        self._body_pose_reset.set_on_clicked(self._on_body_pose_reset)
-
         self._body_pose_joint_val.set_on_value_changed(self._on_body_pose_joint_val)
-
+        self._body_pose_reset.set_on_clicked(self._on_body_pose_reset)
         self._body_pose_ik.set_on_clicked(self._on_run_ik)
 
-        # translation callbacks
         for axis, slider in enumerate((self._trans_x, self._trans_y, self._trans_z)):
             slider.set_on_value_changed(partial(self._on_trans, axis))
         self._trans_reset.set_on_clicked(self._on_trans_reset)
-
-        # global rotation callbacks
         for axis, slider in enumerate((self._rot_x, self._rot_y, self._rot_z)):
             slider.set_on_value_changed(partial(self._on_rot, axis))
         self._rot_reset.set_on_clicked(self._on_rot_reset)
 
-        # transparency callbacks
         self._transparency.set_on_value_changed(self._on_transparency)
         self._transparency_reset.set_on_clicked(self._on_transparency_reset)
-
-        # camera reset callback
         self._camera_reset.set_on_clicked(self._on_camera_reset)
+        self._drag_joints.set_on_checked(self._on_drag_joints)
+        self._show_joints.set_on_checked(self._on_show_joints)
+        self._show_joint_labels.set_on_checked(self._on_show_joint_labels)
+
+        self._anny_phenotype.set_on_selection_changed(self._on_anny_phenotype_comp)
+        self._anny_phenotype_val.set_on_value_changed(self._on_anny_phenotype_val)
+        self._anny_reset_shape.set_on_clicked(self._on_anny_reset_shape)
+        self._anny_region.set_on_selection_changed(self._on_anny_region)
+        self._anny_group.set_on_selection_changed(self._on_anny_group)
+        self._anny_bone.set_on_selection_changed(self._on_anny_bone)
 
         self._scene.set_on_mouse(self._on_mouse_widget)
         self._scene.set_on_key(self._on_key_widget)
 
-        grid = gui.VGrid(2, 0.25 * em)
-        grid.add_child(gui.Label("Body model"))
-        grid.add_child(self._body_model)
-        grid.add_child(gui.Label("Gender"))
-        grid.add_child(self._body_model_gender)
-        self.model_settings.add_child(grid)
+    def _build_sidebar(self, em):
+        """Lay the controls out in two tabs: Model (with collapsible sections) and Display."""
+        margins = gui.Margins(0.75 * em, 0.75 * em, 0.75 * em, 0.75 * em)
+        panel = gui.TabControl()
+        self.model_settings = gui.ScrollableVert(0.5 * em, margins)
+        self._display_settings = gui.ScrollableVert(0.5 * em, margins)
+        panel.add_tab("Model", self.model_settings)
+        panel.add_tab("Display", self._display_settings)
+        panel.set_on_selected_tab_changed(lambda index: self.window.set_needs_layout())
 
-        grid = gui.VGrid(2, 0.25 * em)
-        grid.add_child(gui.Label("Component"))
-        grid.add_child(self._body_model_shape_comp)
-        grid.add_child(gui.Label("Value"))
-        grid.add_child(self._body_beta_val.widget)
-        self._shape_section.add_child(grid)
+        def section(title, is_open=True):
+            widget = gui.CollapsableVert(title, 0.25 * em, gui.Margins(0, 0, 0, 0))
+            widget.set_is_open(is_open)
+            return widget
 
-        h = gui.Horiz(0.25 * em)
-        h.add_child(self._body_beta_reset)
-        self._shape_section.add_child(h)
+        def labelled_grid(parent, rows):
+            grid = gui.VGrid(2, 0.25 * em)
+            for label, widget in rows:
+                grid.add_child(gui.Label(label))
+                grid.add_child(widget)
+            parent.add_child(grid)
+            return grid
 
-        # new global translation UI
-        h = gui.Horiz(0.25 * em)
-        h.add_child(gui.Label("Translation (m)"))
-        self._transform_settings.add_child(h)
-        grid = gui.VGrid(2, 0.25 * em)
-        grid.add_child(gui.Label("Translate X"))
-        grid.add_child(self._trans_x.widget)
-        grid.add_child(gui.Label("Translate Y"))
-        grid.add_child(self._trans_y.widget)
-        grid.add_child(gui.Label("Translate Z"))
-        grid.add_child(self._trans_z.widget)
-        self._transform_settings.add_child(grid)
-        h = gui.Horiz(0.25 * em)
-        h.add_child(self._trans_reset)
-        self._transform_settings.add_child(h)
+        def button_row(parent, button):
+            row = gui.Horiz(0.25 * em)
+            row.add_child(button)
+            parent.add_child(row)
+            return row
 
-        # new global rotation UI
-        self._global_rotation_header_row = gui.Horiz(0.25 * em)
-        self._global_rotation_header_row.add_child(gui.Label("Rotation (rad)"))
-        self._transform_settings.add_child(self._global_rotation_header_row)
-        self._global_rotation_grid = gui.VGrid(2, 0.25 * em)
-        self._global_rotation_grid.add_child(gui.Label("Rotate X"))
-        self._global_rotation_grid.add_child(self._rot_x.widget)
-        self._global_rotation_grid.add_child(gui.Label("Rotate Y"))
-        self._global_rotation_grid.add_child(self._rot_y.widget)
-        self._global_rotation_grid.add_child(gui.Label("Rotate Z"))
-        self._global_rotation_grid.add_child(self._rot_z.widget)
-        self._transform_settings.add_child(self._global_rotation_grid)
-        self._global_rotation_reset_row = gui.Horiz(0.25 * em)
-        self._global_rotation_reset_row.add_child(self._rot_reset)
-        self._transform_settings.add_child(self._global_rotation_reset_row)
+        # --- Model tab
+        labelled_grid(self.model_settings, [("Body model", self._body_model),
+                                            ("Gender", self._body_model_gender)])
 
-        self._expression_grid = gui.VGrid(2, 0.25 * em)
-        self._expression_grid.add_child(gui.Label("Component"))
-        self._expression_grid.add_child(self._body_model_exp_comp)
-        self._expression_grid.add_child(gui.Label("Value"))
-        self._expression_grid.add_child(self._body_exp_val.widget)
-        self._expression_section.add_child(self._expression_grid)
+        self._shape_section = section("Shape")
+        labelled_grid(self._shape_section, [("Component", self._body_model_shape_comp),
+                                            ("Value", self._body_beta_val.widget)])
+        button_row(self._shape_section, self._body_beta_reset)
 
-        # Reset expression Button
-        self._expression_reset_row = gui.Horiz(0.25 * em)
-        self._expression_reset_row.add_child(self._body_exp_reset)
-        self._expression_section.add_child(self._expression_reset_row)
+        self._expression_section = section("Expression")
+        labelled_grid(self._expression_section, [("Component", self._body_model_exp_comp),
+                                                 ("Value", self._body_exp_val.widget)])
+        button_row(self._expression_section, self._body_exp_reset)
 
-        self.model_settings.add_child(self._shape_section)
-        self.model_settings.add_child(self._expression_section)
-        self.model_settings.add_child(self._pose_settings)
-        self.model_settings.add_child(self._transform_settings)
-
-        # Skeleton, labels, drag mode and camera reset live on the viewport
-        # toolbar; their checkboxes remain as hidden state holders.
-
-        # transparency slider
-        grid = gui.VGrid(2, 0.25 * em)
-        grid.add_child(gui.Label("Transparency"))
-        grid.add_child(self._transparency.widget)
-        self._display_settings.add_child(grid)
-
-        self._display_settings.add_fixed(0.5 * em)
-
-        h = gui.Horiz(0.25 * em)
-        h.add_child(self._transparency_reset)
-        self._display_settings.add_child(h)
-
-        self._display_settings.add_fixed(em)
-
+        self._pose_settings = section("Pose")
         self._body_pose_comp_grid.add_child(self._body_pose_comp_label)
         self._body_pose_comp_grid.add_child(self._body_pose_comp)
         self._pose_settings.add_child(self._body_pose_comp_grid)
-
-        self._joint_grid = gui.VGrid(2, 0.25 * em)
         self._body_pose_joint_label = gui.Label("Joint")
+        self._joint_grid = labelled_grid(self._pose_settings, [])
         self._joint_grid.add_child(self._body_pose_joint_label)
         self._joint_grid.add_child(self._body_pose_joint)
-        self._pose_settings.add_child(self._joint_grid)
-
-        self._anny_grid = gui.VGrid(2, 0.25 * em)
         self._anny_region_label = gui.Label("Region")
-        self._anny_grid.add_child(self._anny_region_label)
-        self._anny_grid.add_child(self._anny_region)
         self._anny_group_label = gui.Label("Group")
-        self._anny_grid.add_child(self._anny_group_label)
-        self._anny_grid.add_child(self._anny_group)
         self._anny_bone_label = gui.Label("Bone")
-        self._anny_grid.add_child(self._anny_bone_label)
-        self._anny_grid.add_child(self._anny_bone)
+        self._anny_grid = gui.VGrid(2, 0.25 * em)
+        for label, widget in ((self._anny_region_label, self._anny_region),
+                              (self._anny_group_label, self._anny_group),
+                              (self._anny_bone_label, self._anny_bone)):
+            self._anny_grid.add_child(label)
+            self._anny_grid.add_child(widget)
         self._pose_settings.add_child(self._anny_grid)
-
         self._pose_settings.add_fixed(0.5 * em)
-
-        self._rot_grid = gui.VGrid(2, 0.25 * em)
         self._rot_x_label = gui.Label("Rotation X (deg)")
-        self._rot_grid.add_child(self._rot_x_label)
-        self._rot_grid.add_child(self._body_pose_joint_x.widget)
         self._rot_y_label = gui.Label("Rotation Y (deg)")
-        self._rot_grid.add_child(self._rot_y_label)
-        self._rot_grid.add_child(self._body_pose_joint_y.widget)
         self._rot_z_label = gui.Label("Rotation Z (deg)")
-        self._rot_grid.add_child(self._rot_z_label)
-        self._rot_grid.add_child(self._body_pose_joint_z.widget)
+        self._rot_grid = gui.VGrid(2, 0.25 * em)
+        for label, slider in ((self._rot_x_label, self._body_pose_joint_x),
+                              (self._rot_y_label, self._body_pose_joint_y),
+                              (self._rot_z_label, self._body_pose_joint_z)):
+            self._rot_grid.add_child(label)
+            self._rot_grid.add_child(slider.widget)
         self._pose_settings.add_child(self._rot_grid)
-
-        self._mhr_grid = gui.VGrid(2, 0.25 * em)
-        self._mhr_grid.add_child(gui.Label("Value"))
-        self._mhr_grid.add_child(self._body_pose_joint_val.widget)
-        self._pose_settings.add_child(self._mhr_grid)
-
+        self._mhr_grid = labelled_grid(self._pose_settings, [("Value", self._body_pose_joint_val.widget)])
         self._pose_settings.add_fixed(0.5 * em)
+        button_row(self._pose_settings, self._body_pose_reset)
+        button_row(self._pose_settings, self._body_pose_ik)
+        self._pose_settings.add_child(
+            gui.Label("Toolbar: Drag joints, then drag a marker; release to solve IK."))
 
-        h = gui.Horiz(0.25 * em)  # row 2
-        h.add_child(self._body_pose_reset)
-        self._pose_settings.add_child(h)
+        self._transform_settings = section("Global transform", is_open=False)
+        self._transform_settings.add_child(gui.Label("Translation (m)"))
+        labelled_grid(self._transform_settings, [("Translate X", self._trans_x.widget),
+                                                 ("Translate Y", self._trans_y.widget),
+                                                 ("Translate Z", self._trans_z.widget)])
+        button_row(self._transform_settings, self._trans_reset)
+        self._transform_settings.add_child(gui.Label("Rotation (rad)"))
+        labelled_grid(self._transform_settings, [("Rotate X", self._rot_x.widget),
+                                                 ("Rotate Y", self._rot_y.widget),
+                                                 ("Rotate Z", self._rot_z.widget)])
+        button_row(self._transform_settings, self._rot_reset)
 
-        h = gui.Horiz(0.25 * em)  # row 2
-        h.add_child(self._body_pose_ik)
-        self._pose_settings.add_child(h)
+        for widget in (self._shape_section, self._expression_section,
+                       self._pose_settings, self._transform_settings):
+            self.model_settings.add_child(widget)
 
-        self._pose_settings.add_child(gui.Label("Toolbar: Drag joints, then drag a marker; release to solve IK."))
+        # --- Display tab
+        labelled_grid(self._display_settings, [("Transparency", self._transparency.widget)])
+        self._display_settings.add_fixed(0.5 * em)
+        button_row(self._display_settings, self._transparency_reset)
+        self._display_settings.add_fixed(em)
         self._display_settings.add_child(self.viewer.view_controls)
         self._display_settings.add_child(self.viewer.material_settings)
         self._display_settings.add_child(self.viewer.advanced_lighting)
-        self._set_model_specific_ui_visibility(self._body_model.selected_text)
+        return panel
 
-
-        # Viewport toolbar: camera presets and the display toggles people reach
-        # for most often, floating over the top-left corner of the 3D view.
-        self._toolbar = gui.Horiz(
-            0.25 * em, gui.Margins(0.5 * em, 0.25 * em, 0.5 * em, 0.25 * em))
-        self._toolbar.background_color = gui.Color(0.12, 0.12, 0.12, 0.75)
+    def _build_toolbar(self, em):
+        """Floating toolbar over the viewport: camera presets and display toggles."""
+        toolbar = gui.Horiz(0.25 * em, gui.Margins(0.5 * em, 0.25 * em, 0.5 * em, 0.25 * em))
+        toolbar.background_color = gui.Color(0.12, 0.12, 0.12, 0.75)
 
         def tool_button(text, on_clicked, toggleable=False, tooltip=""):
             button = gui.Button(text)
@@ -802,14 +728,14 @@ class AppWindow:
             button.toggleable = toggleable
             button.tooltip = tooltip
             button.set_on_clicked(on_clicked)
-            self._toolbar.add_child(button)
+            toolbar.add_child(button)
             return button
 
         tool_button("Reset view", self._on_camera_reset, tooltip="Frame the model")
         tool_button("Front", lambda: self._look_from([0., 0., 1.]))
         tool_button("Side", lambda: self._look_from([1., 0., 0.]))
         tool_button("Top", lambda: self._look_from([0., 1., 0.]))
-        self._toolbar.add_fixed(0.5 * em)
+        toolbar.add_fixed(0.5 * em)
         self._skeleton_button = tool_button(
             "Skeleton", lambda: self._set_skeleton_visible(self._skeleton_button.is_on),
             toggleable=True, tooltip="Show joints and bones")
@@ -824,22 +750,10 @@ class AppWindow:
             (self._labels_button, self._show_joint_labels),
             (self._drag_button, self._drag_joints),
         ]
+        return toolbar
 
-        # Info panel
-        self.info = gui.Label("")
-        self.info.visible = False
-
-        # Reserve a separate viewport and full-height tabbed sidebar.
-        w.set_on_layout(self._on_layout)
-        w.add_child(self._scene)
-        w.add_child(self._toolbar)
-        w.add_child(self._settings_panel)
-        w.add_child(self.info)
-        # w.add_child(self.joint_label_3d)
-
-        # ---- Menu ----
-        # The menu is global (because the macOS menu is global), so only create
-        # it once, no matter how many windows are created
+    def _build_menu(self):
+        """Create the global menubar once and connect its items to this window."""
         if gui.Application.instance.menubar is None:
             if isMacOS:
                 app_menu = gui.Menu()
@@ -854,44 +768,31 @@ class AppWindow:
                 file_menu.add_separator()
                 file_menu.add_item("Quit", AppWindow.MENU_QUIT)
             settings_menu = gui.Menu()
-            settings_menu.add_item("Model - Lighting - Materials",
-                                   AppWindow.MENU_SHOW_SETTINGS)
+            settings_menu.add_item("Model - Lighting - Materials", AppWindow.MENU_SHOW_SETTINGS)
             settings_menu.set_checked(AppWindow.MENU_SHOW_SETTINGS, True)
             help_menu = gui.Menu()
             help_menu.add_item("About", AppWindow.MENU_ABOUT)
 
             menu = gui.Menu()
             if isMacOS:
-                # macOS will name the first menu item for the running application
-                # (in our case, probably "Python"), regardless of what we call
-                # it. This is the application menu, and it is where the
-                # About..., Preferences..., and Quit menu items typically go.
+                # macOS names the first menu after the running application and
+                # puts About/Quit there; a separate Help menu would be redundant.
                 menu.add_menu("Example", app_menu)
                 menu.add_menu("File", file_menu)
                 menu.add_menu("Settings", settings_menu)
-                # Don't include help menu unless it has something more than
-                # About...
             else:
                 menu.add_menu("File", file_menu)
                 menu.add_menu("Settings", settings_menu)
                 menu.add_menu("Help", help_menu)
             gui.Application.instance.menubar = menu
 
-        # The menubar is global, but we need to connect the menu items to the
-        # window, so that the window can call the appropriate function when the
-        # menu item is activated.
+        w = self.window
         w.set_on_menu_item_activated(AppWindow.MENU_OPEN, self._on_menu_open)
-        w.set_on_menu_item_activated(AppWindow.MENU_EXPORT,
-                                     self._on_menu_export)
-        w.set_on_menu_item_activated(AppWindow.MENU_SAVE,
-                                     self._on_save_dialog)
+        w.set_on_menu_item_activated(AppWindow.MENU_EXPORT, self._on_menu_export)
+        w.set_on_menu_item_activated(AppWindow.MENU_SAVE, self._on_save_dialog)
         w.set_on_menu_item_activated(AppWindow.MENU_QUIT, self._on_menu_quit)
-        w.set_on_menu_item_activated(AppWindow.MENU_SHOW_SETTINGS,
-                                     self._on_menu_toggle_settings_panel)
+        w.set_on_menu_item_activated(AppWindow.MENU_SHOW_SETTINGS, self._on_menu_toggle_settings_panel)
         w.set_on_menu_item_activated(AppWindow.MENU_ABOUT, self._on_menu_about)
-        # ----
-
-        self.viewer.apply()
 
     def _on_layout(self, layout_context):
         r = self.window.content_rect
@@ -1064,40 +965,16 @@ class AppWindow:
         self._on_show_joint_labels(self._show_joint_labels.checked)
       
     def _set_model_specific_ui_visibility(self, body_model_name):
+        """Show only the pose and shape controls that apply to the selected model."""
         is_mhr = body_model_name == "MHR"
-        is_flame = body_model_name == "FLAME"
-        self._body_pose_joint_x.visible = not is_mhr
-        self._body_pose_joint_y.visible = not is_mhr
-        self._body_pose_joint_z.visible = not is_mhr
-        self._body_pose_joint_val.visible = is_mhr
-       # Global rotation sliders are visible for every model.
-        if hasattr(self, "_global_rotation_header_row"):
-            self._global_rotation_header_row.visible = True
-        if hasattr(self, "_global_rotation_grid"):
-            self._global_rotation_grid.visible = True
-        if hasattr(self, "_global_rotation_reset_row"):
-            self._global_rotation_reset_row.visible = True
-        # MHR edits scalar parameters, so hide the per-axis rotation grid.
-        if hasattr(self, "_rot_grid"):
-            self._rot_grid.visible = not is_mhr
-        if hasattr(self, '_mhr_grid'):
-            self._mhr_grid.visible = is_mhr
-        self.window.set_needs_layout()
-        is_anny = body_model_name == "ANNY"
+        # MHR edits scalar rig parameters instead of per-axis joint rotations.
+        self._rot_grid.visible = not is_mhr
+        self._mhr_grid.visible = is_mhr
         # Only SMPL-X, FLAME and MHR have facial expressions.
-        has_expression = body_model_name in ("SMPLX", "FLAME", "MHR")
-        if hasattr(self, "_expression_section"):
-            self._expression_section.visible = has_expression
-        if hasattr(self, "_expression_grid"):
-            self._expression_grid.visible = has_expression
-        if hasattr(self, "_expression_reset_row"):
-            self._expression_reset_row.visible = has_expression
-        if hasattr(self, "_body_pose_joint_label"):
-            self._joint_grid.visible = not is_anny
-        if hasattr(self, "_anny_grid"):
-            self._anny_grid.visible = is_anny
-        if hasattr(self, '_joint_grid'):
-            self._joint_grid.visible = not is_flame
+        self._expression_section.visible = body_model_name in ("SMPLX", "FLAME", "MHR")
+        # FLAME has one joint per pose group; ANNY adds region/group/bone selectors.
+        self._joint_grid.visible = body_model_name != "FLAME"
+        self._anny_grid.visible = body_model_name == "ANNY"
         self.window.set_needs_layout()
 
     def _classify_anny_bone(self, bone_name):
@@ -2144,7 +2021,7 @@ def main(args):
     # for rendering and prepares the cross-platform window abstraction.
     gui.Application.instance.initialize()
 
-    w = AppWindow(1920, 1080)
+    AppWindow(1920, 1080)
 
     # Run the event loop. This will not return until the last window is closed.
     gui.Application.instance.run()
