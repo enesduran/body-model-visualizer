@@ -1,4 +1,5 @@
 import time
+from functools import wraps
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -7,6 +8,7 @@ from loguru import logger
 
 
 def timeit(func):
+    @wraps(func)
     def wrapper(*args, **kwargs):
         start = time.perf_counter()
         val = func(*args, **kwargs)
@@ -18,14 +20,17 @@ def timeit(func):
 
 @timeit
 def simple_ik_solver(model, target, init=None, device='cpu', max_iter=20,
-                     mse_threshold=1e-8, transl=torch.zeros(1, 3), betas=None):
+                     mse_threshold=1e-8, transl=None, betas=None):
     if init is None:
-        init_pose = torch.zeros(1, 69, requires_grad=True).to(device)
+        init_pose = torch.zeros(1, 69, device=device, requires_grad=True)
     else:
-        init_pose = init.reshape(-1).unsqueeze(0).to(device)
-        init_pose = init_pose.requires_grad_(True)
+        init_pose = init.detach().reshape(1, -1).to(device).clone().requires_grad_(True)
+    target = target.detach().to(device)
+    transl = torch.zeros(1, 3, device=device) if transl is None else transl.detach().to(device)
+    betas = None if betas is None else betas.detach().to(device)
     optimizer = torch.optim.Adam([init_pose], lr=0.1)
-    last_mse = 0
+    last_mse = None
+    loss_value = None
     for i in range(max_iter):
 
         mse = torch.mean(torch.square((
@@ -34,15 +39,19 @@ def simple_ik_solver(model, target, init=None, device='cpu', max_iter=20,
                     betas=betas,
                     transl=transl,
                 ).joints[0,:22] - target)))
-        # print(i, mse.item())
-        if abs(mse - last_mse) < mse_threshold:
-            return init_pose
-        optimizer.zero_grad()
-        mse.backward(retain_graph=True)
+        loss_value = mse.detach().item()
+        if loss_value < mse_threshold or (
+            last_mse is not None and abs(loss_value - last_mse) < mse_threshold
+        ):
+            break
+        optimizer.zero_grad(set_to_none=True)
+        # Only pose is optimized; model and shape parameter gradients stay untouched.
+        init_pose.grad, = torch.autograd.grad(mse, init_pose)
         optimizer.step()
-        last_mse = mse
-    logger.info(f'IK final loss {last_mse.item():.3f}')
-    return init_pose
+        last_mse = loss_value
+    if loss_value is not None:
+        logger.info(f'IK last evaluated loss {loss_value:.6f}')
+    return init_pose.detach()
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

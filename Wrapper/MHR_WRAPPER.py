@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 import numpy as np
 from mhr.mhr import MHR
-from Wrapper.body_model_wrapper import BodyModelWrapper
+from Wrapper.body_model_wrapper import BodyModelWrapper, MeshData
 
 NUM_IDENTITY_BLENDSHAPES = 45
 NUM_FACE_EXPRESSION_BLENDSHAPES = 72
@@ -28,15 +28,18 @@ class MHR_WRAPPER(BodyModelWrapper):
         self._faces = np.asarray(self._model.character.mesh.faces, dtype=np.int32)
 
         pt = self._model.character.parameter_transform
-        self._pose_param_names = list(pt.names[:NUM_MODEL_PARAMETERS])
-        self._joint_names = list(self._model.character.skeleton.joint_names)
+        self.parameter_names['model_parameters'] = list(pt.names[:NUM_MODEL_PARAMETERS])
+        self.joint_names = list(self._model.character.skeleton.joint_names)
+        self.joint_parents = np.asarray(
+            self._model.character.skeleton.joint_parents, dtype=np.int64
+        )
 
         mins, maxs = self._model.character.model_parameter_limits
         mins = np.asarray(mins[:NUM_MODEL_PARAMETERS], dtype=np.float32)
         maxs = np.asarray(maxs[:NUM_MODEL_PARAMETERS], dtype=np.float32)
         mins = np.where(mins < -UNBOUNDED_SENTINEL, -UNBOUNDED_FALLBACK, mins)
         maxs = np.where(maxs > UNBOUNDED_SENTINEL, UNBOUNDED_FALLBACK, maxs)
-        self._pose_param_limits = np.stack([mins, maxs], axis=1)
+        self.parameter_limits['model_parameters'] = np.stack([mins, maxs], axis=1)
 
         return self
 
@@ -52,22 +55,7 @@ class MHR_WRAPPER(BodyModelWrapper):
             n = min(expression.shape[1], NUM_FACE_EXPRESSION_BLENDSHAPES)
             self._face_expr_coeffs[0, :n] = expression[0, :n]
             
-        # Model parameters kopieren
-        model_parameters = input_params['model_parameters'].clone()
-
-        # Root Translation (Index 0, 1, 2)
-        if 'trans' in input_params and input_params['trans'].numel() > 0:
-            trans = input_params['trans'][0, 0]
-            model_parameters[0, 0] = trans[0]
-            model_parameters[0, 1] = trans[1]
-            model_parameters[0, 2] = trans[2]
-
-        # Root Rotation (Index 3, 4, 5)
-        if 'global_orient' in input_params:
-            rot = input_params['global_orient'][0, 0]
-            model_parameters[0, 3] = rot[0]
-            model_parameters[0, 4] = rot[1]
-            model_parameters[0, 5] = rot[2]
+        model_parameters = self._pose_parameters(input_params)
 
         with torch.no_grad():
             verts, skel_state = self._model(
@@ -80,4 +68,32 @@ class MHR_WRAPPER(BodyModelWrapper):
         joints = skel_state.squeeze(0)[:, :3].detach().numpy() / 100.0
         faces = self._faces
 
-        return (verts, joints, faces)
+        return MeshData(verts, joints, faces)
+
+    def _pose_parameters(self, input_params):
+        parameters = input_params['model_parameters'].clone()
+        if 'trans' in input_params:
+            parameters[:, :3] = input_params['trans'].reshape(1, 3)
+        if 'global_orient' in input_params:
+            parameters[:, 3:6] = input_params['global_orient'].reshape(1, 3)
+        return parameters
+
+    def ik_parameter_masks(self, input_params):
+        # MHR's flexiblePose set changes bone lengths; it is not articulation.
+        sets = self._model.character.parameter_transform.parameter_sets
+        fixed = np.zeros(NUM_MODEL_PARAMETERS, dtype=bool)
+        for name in ('rigid', 'scale', 'handScale', 'flexiblePose'):
+            fixed |= np.asarray(sets[name])[:NUM_MODEL_PARAMETERS]
+        limits = self.parameter_limits['model_parameters']
+        mask = ~fixed & (limits[:, 0] < limits[:, 1])
+        return {'model_parameters': torch.as_tensor(mask).reshape_as(input_params['model_parameters'])}
+
+    def ik_joints(self, input_params, shape_params=None, expression=None):
+        # The MHR skeleton depends on rig parameters, not mesh blendshapes.
+        parameters = self._pose_parameters(input_params)
+        padding_size = self._model.character.parameter_transform.size - parameters.shape[1]
+        padded = torch.cat((parameters, parameters.new_zeros((1, padding_size))), dim=1)
+        character = self._model.character_torch
+        joint_parameters = character.model_parameters_to_joint_parameters(padded)
+        state = character.joint_parameters_to_skeleton_state(joint_parameters)
+        return state[0, :, :3] / 100.0

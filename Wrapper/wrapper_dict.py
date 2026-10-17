@@ -1,10 +1,13 @@
 from loguru import logger
+from functools import partial
 
 from Wrapper.ANNY_WRAPPER import ANNY_WRAPPER
 from Wrapper.STAR_WRAPPER import STAR_WRAPPER
 from Wrapper.SUPR_WRAPPER import SUPR_WRAPPER
+from Wrapper.SMPL_WRAPPER import SMPL_WRAPPER
 
 WRAPPER_CLASSES = {
+    **{name: partial(SMPL_WRAPPER, name) for name in SMPL_WRAPPER.MODEL_CLASSES},
     'SUPR': SUPR_WRAPPER,
     'ANNY': ANNY_WRAPPER,
     'STAR': STAR_WRAPPER,
