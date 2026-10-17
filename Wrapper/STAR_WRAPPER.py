@@ -12,7 +12,6 @@ class STAR_WRAPPER(BodyModelWrapper):
         return self
 
     def _model_output(self, input_params, shape_params):
-        # berechnung der neuen werte
         input_params = {k: v.reshape(1, -1) for k, v in input_params.items()}
 
         return self._model(

@@ -11,7 +11,7 @@ NUM_FACE_EXPRESSION_BLENDSHAPES = 72
 NUM_MODEL_PARAMETERS = 204
 LOD = 1
 MHR_ASSETS_DIR = Path(body_model_dir("mhr")) / "assets"
-# idk was das isti
+# Values beyond this are treated as unbounded and clamped to a usable range.
 UNBOUNDED_SENTINEL = 1.0e30
 UNBOUNDED_FALLBACK = 3.14
 

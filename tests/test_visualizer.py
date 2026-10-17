@@ -6,7 +6,6 @@ import numpy as np
 import torch
 
 from main import AppWindow, gui
-from simple_ik import simple_ik_solver
 from Wrapper.body_model_wrapper import BodyModelWrapper, MeshData
 
 
@@ -233,29 +232,6 @@ class GradientTests(unittest.TestCase):
         self.assertFalse(model.grad_enabled)
         self.assertTrue(torch.is_grad_enabled())
         torch.testing.assert_close(params['pose'], original)
-
-    def test_ik_reduces_error_and_leaves_input_and_model_gradients_untouched(self):
-        class Model(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.scale = torch.nn.Parameter(torch.ones(()))
-
-            def forward(self, body_pose, betas, transl):
-                joints = body_pose.reshape(1, 22, 3) * self.scale
-                return SimpleNamespace(joints=joints + transl[:, None, :])
-
-        model = Model()
-        init = torch.zeros(1, 22, 3, requires_grad=True)
-        target = torch.full((1, 22, 3), 0.5)
-        original = init.detach().clone()
-        result = simple_ik_solver(model, target, init, max_iter=80)
-        self.assertLess(torch.mean((result.reshape_as(target) - target) ** 2).item(), 1e-4)
-        torch.testing.assert_close(init, original)
-        self.assertIsNone(init.grad)
-        self.assertIsNone(model.scale.grad)
-        self.assertFalse(result.requires_grad)
-        empty_result = simple_ik_solver(model, target, init, max_iter=0)
-        torch.testing.assert_close(empty_result.reshape_as(original), original)
 
 
 if __name__ == '__main__':

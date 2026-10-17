@@ -380,7 +380,7 @@ class AppWindow:
 
     # add Star and Anny
     BODY_MODEL_NAMES = ["SMPL", "SMPLX", "MANO", "FLAME", "SUPR", "STAR", "ANNY", "MHR"]
-    # für anny werden die rigs wie genders interpretiert
+    # For ANNY the rig variants take the place of genders.
     BODY_MODEL_GENDERS = {
         'SMPL': ['neutral', 'male', 'female'],
         'SMPLX': ['neutral', 'male', 'female'],
@@ -515,7 +515,7 @@ class AppWindow:
         'r_eye', 'r_eye_null', 'l_eye', 'l_eye_null',
     ]
     CAM_FIRST = True
-    # speichern fuer den camera reset button
+    # Saved for the camera reset button.
     CAM_BOUNDS = None
     CAM_CENTER = None
 
@@ -582,8 +582,8 @@ class AppWindow:
     JOINTS = None
     SELECTED_JOINT = None
     BODY_TRANSL = None
-    # GROUND_OFFSET wird beim ersten Rendern berechnet und gecacht
-    # damit Rotation den Root nicht verschieben lässt
+    # GROUND_OFFSET is computed on the first render and cached
+    # so that rotating the body does not move its root.
     GROUND_OFFSET = None
 
     def __init__(self, width, height):
@@ -853,7 +853,7 @@ class AppWindow:
         self._transparency.double_value = 0.0
         self._transparency_reset = gui.Button("Reset transparency")
 
-        # reset kamera button
+        # camera reset button
         self._camera_reset = gui.Button("Reset camera")
 
         self._body_beta_text = gui.Label("Betas")
@@ -907,36 +907,21 @@ class AppWindow:
         self._show_joint_labels.set_on_checked(self._on_show_joint_labels)
 
         # ------- ANNY MODEL SETTINGS ------- #
-        #self._anny_model = None
-        #self._anny_self_intersection_module = None
-        #self._anny_aux_geometry_names = []
-        #self._anny_phenotype_values = {}
-        #self._anny_local_change_values = {}
         anny_settings = gui.CollapsableVert("Anny Settings", 0.25 * em,
                                          gui.Margins(em, 0, 0, 0))
-        # funktioniert nicht, aber man will ja sowieso das es sich nur öffnet sobald anny bei den body models ausgewählt wird
 
         anny_settings.set_is_open(False)
-        #self._updating_anny_controls = False
-        #self.anny_settings = gui.CollapsableVert("Anny Settings", 0,
-        #                                          gui.Margins(em, 0, 0, 0))
-        # Auswahl Model_Types
+        # ANNY model type selection
         self._anny_model_type = gui.Combobox()
         for model_type in AppWindow.ANNY_MODEL_TYPES:
             self._anny_model_type.add_item(model_type)
-        # Auswahl RIGS
+        # ANNY rig selection
         self._anny_rig = gui.Combobox()
         for rig in AppWindow.ANNY_RIGS:
             self._anny_rig.add_item(rig)
 
-        # schauen wie sinnvoll das ist umzusetzen
-        #self._anny_show_bones = gui.Checkbox("Show Anny bones")
-        #self._anny_show_self_intersections = gui.Checkbox("Show self intersections")
-        #self._anny_extrapolate_phenotypes = gui.Checkbox("Extrapolate phenotypes")
-        #self._anny_description = gui.Label("")
-        #self._anny_measurements = gui.Label("")
 
-        # Auswahl Phenotypes
+        # ANNY phenotype selection
         self._anny_phenotype = gui.Combobox()
         for name in AppWindow.ANNY_PHENOTYPE_NAMES:
             self._anny_phenotype.add_item(name)
@@ -952,34 +937,19 @@ class AppWindow:
         self._anny_bone = gui.Combobox()
         self._populate_anny_regions()
 
-        # Lokale Änderungen -> muss irgendwie verbunden werden mit Phenotypes oder so wie in der demo
-        #self._anny_local_change = gui.Combobox()
-        #self._anny_local_change_val = gui.Slider(gui.Slider.DOUBLE)
-        #self._anny_local_change_val.set_limits(-1.0, 1.0)
 
         self._on_body_model(AppWindow.BODY_MODEL_NAMES[0], 0)
         self._on_body_pose_comp(list(AppWindow.POSE_PARAMS[AppWindow.BODY_MODEL_NAMES[0]].keys())[0], 0)
         self._body_model.set_on_selection_changed(self._on_body_model)
         self._body_model_gender.set_on_selection_changed(self._on_body_model_gender)
 
-        # Verbindet die neuen Anny-Widgets mit ihren Callbacks. Jede Aenderung
-        # an Topologie, Rig, Phenotype, Local Change oder Zusatzanzeige fuehrt
-        # am Ende zu ⁠ _reload_anny() ⁠. ???
-        #self._anny_model_type.set_on_selection_changed(self._on_anny_model_type)
-        #self._anny_rig.set_on_selection_changed(self._on_anny_rig)
-        #self._anny_show_bones.set_on_checked(self._on_anny_show_bones)
-        #self._anny_show_self_intersections.set_on_checked(self._on_anny_show_self_intersections)
-        #self._anny_extrapolate_phenotypes.set_on_checked(self._on_anny_extrapolate_phenotypes)
         self._anny_phenotype.set_on_selection_changed(self._on_anny_phenotype_comp)
         self._anny_phenotype_val.set_on_value_changed(self._on_anny_phenotype_val)
-        #self._anny_local_change.set_on_selection_changed(self._on_anny_local_change)
-        #self._anny_local_change_val.set_on_value_changed(self._on_anny_local_change_val)
         self._anny_reset_shape.set_on_clicked(self._on_anny_reset_shape)
         self._anny_region.set_on_selection_changed(self._on_anny_region)
         self._anny_group.set_on_selection_changed(self._on_anny_group)
         self._anny_bone.set_on_selection_changed(self._on_anny_bone)
 
-        #################################################################################
 
         self._body_beta_val.set_on_value_changed(self._on_body_beta_val)
         self._body_beta_reset.set_on_clicked(self._on_body_beta_reset)
@@ -996,29 +966,28 @@ class AppWindow:
         self._body_pose_joint_z.set_on_value_changed(self._on_body_pose_joint_z)
         self._body_pose_reset.set_on_clicked(self._on_body_pose_reset)
 
-        # neu for mhr?
         self._body_pose_joint_z.set_on_value_changed(self._on_body_pose_joint_z)
         self._body_pose_joint_val.set_on_value_changed(self._on_body_pose_joint_val)
 
         self._body_pose_ik.set_on_clicked(self._on_run_ik)
 
-        # translation callbacks registrieren
+        # translation callbacks
         self._trans_x.set_on_value_changed(self._on_trans_x)
         self._trans_y.set_on_value_changed(self._on_trans_y)
         self._trans_z.set_on_value_changed(self._on_trans_z)
         self._trans_reset.set_on_clicked(self._on_trans_reset)
 
-        # global rotation callbacks registrieren
+        # global rotation callbacks
         self._rot_x.set_on_value_changed(self._on_rot_x)
         self._rot_y.set_on_value_changed(self._on_rot_y)
         self._rot_z.set_on_value_changed(self._on_rot_z)
         self._rot_reset.set_on_clicked(self._on_rot_reset)
 
-        # transparency callbacks registrieren
+        # transparency callbacks
         self._transparency.set_on_value_changed(self._on_transparency)
         self._transparency_reset.set_on_clicked(self._on_transparency_reset)
 
-        # reset camera callbacks registrieren
+        # camera reset callback
         self._camera_reset.set_on_clicked(self._on_camera_reset)
 
         self._scene.set_on_mouse(self._on_mouse_widget)
@@ -1153,12 +1122,10 @@ class AppWindow:
 
         h = gui.Horiz(0.25 * em)  # row 2
         h.add_child(self._body_pose_reset)
-        # h.add_child(gui.VectorEdit())
         self._pose_settings.add_child(h)
 
         h = gui.Horiz(0.25 * em)  # row 2
         h.add_child(self._body_pose_ik)
-        # h.add_child(gui.VectorEdit())
         self._pose_settings.add_child(h)
 
         self._pose_settings.add_child(gui.Label("Toolbar: Drag joints, then drag a marker; release to solve IK."))
@@ -1468,7 +1435,6 @@ class AppWindow:
 
         joints = AppWindow.JOINTS
         if show:
-            # logger.info('drawing joints')
             for i in range(num_joints):
                 joint_name = joint_names[i] if i < len(joint_names) else f"joint_{i}"
                 if bm == "ANNY":
@@ -1575,21 +1541,21 @@ class AppWindow:
         self._body_pose_joint_y.visible = not is_mhr
         self._body_pose_joint_z.visible = not is_mhr
         self._body_pose_joint_val.visible = is_mhr
-       # Global Rotation Slider immer sichtbar (für alle Modelle)
+       # Global rotation sliders are visible for every model.
         if hasattr(self, "_global_rotation_header_row"):
             self._global_rotation_header_row.visible = True
         if hasattr(self, "_global_rotation_grid"):
             self._global_rotation_grid.visible = True
         if hasattr(self, "_global_rotation_reset_row"):
             self._global_rotation_reset_row.visible = True
-        # Labels für rot_x/y/z auch verstecken bei MHR
+        # MHR edits scalar parameters, so hide the per-axis rotation grid.
         if hasattr(self, "_rot_grid"):
             self._rot_grid.visible = not is_mhr
         if hasattr(self, '_mhr_grid'):
             self._mhr_grid.visible = is_mhr
         self.window.set_needs_layout()
         is_anny = body_model_name == "ANNY"
-        # Nur SMPLX, FLAME und MHR haben Facial Expression
+        # Only SMPL-X, FLAME and MHR have facial expressions.
         has_expression = body_model_name in ("SMPLX", "FLAME", "MHR")
         if hasattr(self, "_expression_section"):
             self._expression_section.visible = has_expression
@@ -1599,8 +1565,6 @@ class AppWindow:
             self._expression_reset_row.visible = has_expression
         if hasattr(self, "_body_pose_joint_label"):
             self._joint_grid.visible = not is_anny
-            #self._body_pose_joint_label.visible = not is_anny
-            #self._body_pose_joint.visible = not is_anny
         if hasattr(self, "_anny_grid"):
             self._anny_grid.visible = is_anny
         if hasattr(self, '_joint_grid'):
@@ -1675,7 +1639,7 @@ class AppWindow:
         # ANNY may be absent (not installed, or excluded from a trimmed build).
         bone_names = AppWindow.JOINT_NAMES.get("ANNY", {}).get("pose", [])
         for bone_index, bone_name in enumerate(bone_names):
-            # Root (Index 0) ausblenden - wird über Global Rotation gesteuert
+            # Hide the root (index 0); it is driven by the global rotation sliders.
             if bone_index == 0:
                 continue
             region, group = self._classify_anny_bone(bone_name)
@@ -1737,7 +1701,6 @@ class AppWindow:
             self._updating_anny_hierarchy = True
             self._body_pose_joint.selected_index = bone_index
             self._updating_anny_hierarchy = False
-            #self._reset_rot_sliders()
             self._sync_pose_joint_sliders()
 
     def _sync_anny_hierarchy_to_bone(self, bone_index):
@@ -1788,12 +1751,10 @@ class AppWindow:
 
     def _on_body_model(self, name, index):
         logger.info(f"Loading body model {name}-{index}")
-        #self._body_beta_val.double_value = 0.0
         # not resetting expression anymore instead restore old values
         self._body_exp_tensor = self._get_or_create_exp_tensor(name)
         self._body_exp_val.double_value = self._body_exp_tensor[0, 0].item()
         AppWindow.CAM_FIRST = True
-        #self.load_body_model(name)
         self._set_model_specific_ui_visibility(name)
 
         # treat anny phenotypes like smpl betas
@@ -1823,7 +1784,7 @@ class AppWindow:
 
         self._body_pose_comp.clear_items()
         for k in AppWindow.POSE_PARAMS[name].keys():
-            # trans und global_orient werden über die globalen Slider gesteuert
+            # trans and global_orient are driven by the global sliders.
             if k in ('trans', 'global_orient'):
                 continue
             self._body_pose_comp.add_item(k)
@@ -1831,31 +1792,30 @@ class AppWindow:
         self._body_pose_joint.clear_items()
         joint_names = AppWindow.JOINT_NAMES[name][self._body_pose_comp.selected_text]
         for i in range(AppWindow.POSE_PARAMS[name][self._body_pose_comp.selected_text].shape[1]):
-            # Bei MHR: erste 6 (Root Trans + Rot) ausblenden (haben eigene Slider)
+            # MHR: hide the first 6 (root translation + rotation), which have their own sliders.
             if name == 'MHR' and i < 6:
                 continue
-            # Bei MHR: Parameter mit min==max ausblenden (nicht bewegbar)
+            # MHR: hide parameters with min == max (not movable).
             if name == 'MHR':
                 gender = self._body_model_gender.selected_text
                 wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
                 lo, hi = wrapper.parameter_limits['model_parameters'][i]
                 if lo == hi:
                     continue
-            # Bei SUPR/STAR/ANNY: Root (Index 0) ausblenden (hat eigene Global Rotation Slider)
+            # SUPR/STAR/ANNY: hide the root (index 0); it has the global rotation sliders.
             if name in ('SUPR', 'STAR', 'ANNY') and i == 0:
                 continue
             self._body_pose_joint.add_item(f'{i}-{joint_names[i]}')
         if name == "ANNY" and self._body_pose_joint.number_of_items > 0:
             self._sync_anny_hierarchy_to_bone(0)
 
-        #self._reset_rot_sliders()
         self._sync_pose_joint_sliders()
         self._sync_global_sliders()
         self._sync_transparency()
         AppWindow.SELECTED_JOINT = None
         self._on_show_joints(self._show_joints.checked, update_transparency=False)
 
-        # pose comp nur fuer SMPLX und FLAME anzeigen
+        # Only SMPL-X and FLAME have more than one pose group.
         need_comp = name in ('SMPLX', 'FLAME')
         self._body_pose_comp_grid.visible = need_comp
 
@@ -1866,13 +1826,11 @@ class AppWindow:
         self._body_beta_val.double_value = 0.0
         AppWindow.GROUND_OFFSET = None
         self.load_body_model(self._body_model.selected_text, gender=name)
-       # self._reset_rot_sliders()
         self._sync_beta_slider()
         self._sync_pose_joint_sliders()
         self._sync_global_sliders()
         self._sync_transparency()
         self._on_show_joints(self._show_joints.checked, update_transparency=False)
-        # self._apply_settings()
 
     def _on_body_beta_val(self, val):
         if self._body_model.selected_text == 'ANNY':
@@ -1900,7 +1858,7 @@ class AppWindow:
         if self._body_model.selected_text == "ANNY" and not self._updating_anny_hierarchy:
             bone_index = int(name.split('-')[0])
             self._sync_anny_hierarchy_to_bone(bone_index)
-        elif self._body_model.selected_text == "MHR":   # NEU
+        elif self._body_model.selected_text == "MHR":
             ji = int(name.split('-')[0])
             gender = self._body_model_gender.selected_text
             wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
@@ -1977,7 +1935,7 @@ class AppWindow:
         self._body_exp_val.double_value = self._body_exp_tensor[0, index].item()
 
     def _on_body_pose_comp(self, name, index):
-        if self._body_model.selected_text == "MHR":   # NEU
+        if self._body_model.selected_text == "MHR":
             ji = int(name.split('-')[0])
             gender = self._body_model_gender.selected_text
             wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
@@ -1990,17 +1948,17 @@ class AppWindow:
         bm = self._body_model.selected_text
         joint_names = AppWindow.JOINT_NAMES[bm][name]
         for i in range(AppWindow.POSE_PARAMS[bm][name].shape[1]):
-            # Bei MHR: erste 6 (Root Trans + Rot) ausblenden (haben eigene Slider)
+            # MHR: hide the first 6 (root translation + rotation), which have their own sliders.
             if bm == 'MHR' and i < 6:
                 continue
-            # Bei MHR: Parameter mit min==max ausblenden (nicht bewegbar)
+            # MHR: hide parameters with min == max (not movable).
             if bm == 'MHR':
                 gender = self._body_model_gender.selected_text
                 wrapper = AppWindow.PRELOADED_BODY_MODELS[f'mhr-{gender.lower()}']
                 lo, hi = wrapper.parameter_limits['model_parameters'][i]
                 if lo == hi:
                     continue
-            # Bei SUPR/STAR/ANNY: Root (Index 0) ausblenden
+            # SUPR/STAR/ANNY: hide the root (index 0).
             if bm in ('SUPR', 'STAR', 'ANNY') and i == 0:
                 continue
             self._body_pose_joint.add_item(f'{i}-{joint_names[i]}')
@@ -2055,7 +2013,6 @@ class AppWindow:
 
     def _on_body_pose_reset(self):
         bm = self._body_model.selected_text
-        #bp = self._body_pose_comp.selected_text
         for key in AppWindow.POSE_PARAMS[bm]:
             AppWindow.POSE_PARAMS[bm][key] = torch.zeros_like(AppWindow.POSE_PARAMS[bm][key])
         self._sync_pose_joint_sliders()
@@ -2699,7 +2656,7 @@ class AppWindow:
         mesh.compute_vertex_normals()
         mesh.paint_uniform_color([0.5, 0.5, 0.5])
 
-        # berechne den Ground Offset, wenn er noch nicht gesetzt wurde
+        # Compute the ground offset once per shape.
         if AppWindow.GROUND_OFFSET is None:
             user_y = 0.0
             if "trans" in AppWindow.POSE_PARAMS[body_model]:
@@ -2735,9 +2692,6 @@ class AppWindow:
         self._apply_transparency(AppWindow.TRANSPARENCY.get(body_model, 0.0))
 
     def load(self, path):
-        # self._scene.scene.clear_geometry()
-        # if self.settings.show_ground:
-        #     self.add_ground_plane()
 
         geometry = None
         geometry_type = o3d.io.read_file_geometry_type(path)
