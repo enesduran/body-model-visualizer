@@ -2,6 +2,7 @@ import numpy as np
 from smplx import SMPL, SMPLX, MANO, FLAME
 
 from Wrapper.body_model_wrapper import BodyModelWrapper, MeshData
+from paths import body_model_dir
 from utils import (
     SMPL_NAMES, SMPLX_NAMES, MANO_NAMES, FLAME_KEYPOINT_NAMES,
     smpl_joint_names, smplx_body_joint_names, hand_joint_names,
@@ -39,7 +40,7 @@ class SMPL_WRAPPER(BodyModelWrapper):
         if self.model_type != 'SMPL':
             options.update(use_pca=False, flat_hand_mean=True, use_face_contour=True)
         self._model = self.MODEL_CLASSES[self.model_type](
-            f'data/body_models/{self.model_type.lower()}', **options
+            body_model_dir(self.model_type.lower()), **options
         )
         self.joint_names = list(self.JOINT_NAMES[self.model_type])
         self.parameter_names = {

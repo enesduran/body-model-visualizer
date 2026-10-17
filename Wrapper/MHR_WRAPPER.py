@@ -4,14 +4,13 @@ import torch
 import numpy as np
 from mhr.mhr import MHR
 from Wrapper.body_model_wrapper import BodyModelWrapper, MeshData
+from paths import body_model_dir
 
 NUM_IDENTITY_BLENDSHAPES = 45
 NUM_FACE_EXPRESSION_BLENDSHAPES = 72
 NUM_MODEL_PARAMETERS = 204
 LOD = 1
-MHR_ASSETS_DIR = (
-    Path(__file__).resolve().parents[1] / "data" / "body_models" / "mhr" / "assets"
-)
+MHR_ASSETS_DIR = Path(body_model_dir("mhr")) / "assets"
 # idk was das isti
 UNBOUNDED_SENTINEL = 1.0e30
 UNBOUNDED_FALLBACK = 3.14

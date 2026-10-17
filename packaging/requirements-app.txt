@@ -1,0 +1,24 @@
+# Minimal pip dependencies for building the standalone app on any OS.
+# Install numpy/setuptools first and use --no-build-isolation for chumpy:
+#   pip install numpy setuptools wheel
+#   pip install --no-build-isolation -r packaging/requirements-app.txt
+# On Linux/Windows add CPU-only torch wheels:
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+numpy
+scipy
+torch
+open3d==0.19.0
+smplx
+# PyPI chumpy 0.70 breaks on NumPy >= 1.24; the git master (0.71) works.
+chumpy @ git+https://github.com/mattloper/chumpy.git
+roma
+loguru
+tqdm
+joblib
+# Imported by open3d at module level, so the bundle needs them even if unused.
+plotly
+matplotlib
+dash
+pandas
+scikit-learn
+pyinstaller>=6.0

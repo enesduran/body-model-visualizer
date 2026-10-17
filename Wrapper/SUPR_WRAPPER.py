@@ -1,11 +1,13 @@
 import numpy as np
 from Wrapper.body_model_wrapper import BodyModelWrapper, MeshData
 from SUPR.supr.pytorch.supr import SUPR
+from paths import body_model_dir
+import os
 from utils import SMPLX_NAMES
 
 class SUPR_WRAPPER(BodyModelWrapper):
     def preload_body_model(self, gender):
-        self._model = SUPR(f'data/body_models/supr/supr_{gender}.npy')
+        self._model = SUPR(os.path.join(body_model_dir('supr'), f'supr_{gender}.npy'))
         self.joint_names = list(SMPLX_NAMES)
         self.parameter_names = {'pose': list(SMPLX_NAMES), 'trans': ['pelvis']}
         self.joint_parents = np.asarray([-1] + self._model.parent.cpu().tolist())

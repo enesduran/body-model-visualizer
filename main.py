@@ -59,6 +59,7 @@ from utils import (
     FOOT_KEYPOINT_NAMES,
 )
 from inverse_kinematics import solve_ik
+from paths import external_models_dir
 
 
 isMacOS = (platform.system() == "Darwin")
@@ -2675,7 +2676,7 @@ class AppWindow:
                 AppWindow.BODY_MODEL_NAMES.remove(body_model)
         if not AppWindow.BODY_MODEL_NAMES:
             raise RuntimeError('No body models could be loaded. Place model files '
-                               'under data/body_models (see README).')
+                               f'under {external_models_dir()} (see README).')
         logger.info(f'Loaded body models {list(AppWindow.PRELOADED_BODY_MODELS)}')
 
     def load_body_model(self, body_model=None, gender=None):

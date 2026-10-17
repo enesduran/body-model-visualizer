@@ -245,11 +245,25 @@ packaging/build_app.sh
 open "dist/Body Model Visualizer.app"
 ```
 
-The bundle runs on the macOS architecture it was built on. It is ad-hoc
-signed, so the first launch may need right-click > Open. Logs are written to
-`~/Library/Logs/BodyModelVisualizer.log`. SMPL-family model files are
-MPI-licensed and may not be redistributed, so keep such builds for machines
-covered by your own licence.
+The bundle runs on the OS and CPU architecture it was built on; PyInstaller
+cannot cross-compile. On macOS it is ad-hoc signed, so the first launch may
+need right-click > Open, and logs go to `~/Library/Logs/BodyModelVisualizer.log`.
+SMPL-family model files are MPI-licensed and may not be redistributed, so keep
+builds that include them for machines covered by your own licence.
+
+**Linux and Windows.** The same spec works there with pip dependencies from
+`packaging/requirements-app.txt` (see its header for the install order); the
+result is the folder `dist/Body Model Visualizer/` with the executable inside.
+The GitHub Actions workflow `.github/workflows/build-app.yml` builds Linux,
+Windows and macOS bundles on demand (Actions > Build standalone app > Run
+workflow, or push a tag `app-v*`) and uploads them as artifacts. Those builds
+contain no model files.
+
+**Adding models to a built app.** Create `data/body_models/<model>/...` next
+to the app (beside the `.app` on macOS, inside the `Body Model Visualizer`
+folder on Linux/Windows) using the same layout as in this repository, and
+restart. The app offers whatever it finds there in addition to anything that
+was bundled; `BMVIS_DATA_DIR` overrides the lookup location.
 
 Run the regression tests in the configured application environment:
 
