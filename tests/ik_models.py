@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import torch
 from main import AppWindow
-from Wrapper.wrapper_dict import WRAPPER_CLASSES
+from body_models import WRAPPER_CLASSES
 from inverse_kinematics import solve_ik
 
 

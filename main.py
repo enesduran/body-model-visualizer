@@ -61,6 +61,7 @@ from utils import (
 )
 from inverse_kinematics import solve_ik
 from paths import external_models_dir
+from body_models import WRAPPER_CLASSES
 
 
 isMacOS = (platform.system() == "Darwin")
@@ -2469,15 +2470,9 @@ class AppWindow:
 
     def preload_body_models(self):
         """Load every requested model variant whose wrapper and files exist."""
-        from Wrapper.wrapper_dict import WRAPPER_CLASSES
-
         requested = AppWindow.REQUESTED_MODELS
         for body_model in list(AppWindow.BODY_MODEL_NAMES):
             if requested is not None and body_model not in requested:
-                AppWindow.BODY_MODEL_NAMES.remove(body_model)
-                continue
-            if body_model not in WRAPPER_CLASSES:
-                logger.warning(f'Skipping unavailable body model wrapper {body_model}')
                 AppWindow.BODY_MODEL_NAMES.remove(body_model)
                 continue
             loaded_genders = []
@@ -2485,6 +2480,10 @@ class AppWindow:
                 logger.info(f'Loading {body_model}-{gender}')
                 try:
                     model = WRAPPER_CLASSES[body_model]().preload_body_model(gender)
+                except ImportError as error:
+                    # The model's package is not installed (or is broken).
+                    logger.warning(f'{body_model} unavailable, skipping: {error}')
+                    break
                 except (OSError, AssertionError, ValueError, KeyError, RuntimeError) as error:
                     # Missing or unreadable model files: offer the other variants.
                     logger.warning(f'Skipping {body_model}-{gender}: {error}')

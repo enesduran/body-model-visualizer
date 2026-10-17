@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 from main import AppWindow, gui
-from Wrapper.body_model_wrapper import BodyModelWrapper, MeshData
+from body_models import BodyModelWrapper, MeshData
 
 
 class FakeScene:

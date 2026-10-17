@@ -34,8 +34,6 @@ for package in ('open3d', 'smplx', 'chumpy', 'roma'):
     binaries += b
     hiddenimports += h
 hiddenimports += collect_submodules('scipy.spatial.transform')
-# Wrapper modules are imported by name at runtime (Wrapper/wrapper_dict.py).
-hiddenimports += ['Wrapper', 'Wrapper.body_model_wrapper', 'Wrapper.SMPL_WRAPPER', 'paths']
 
 # Only exclude what is certainly unrelated: the other body-model packages
 # (their wrappers import lazily and are skipped when absent) and GUI toolkits.

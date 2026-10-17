@@ -21,10 +21,8 @@ It was originally developed for the SMPL-family body models : SMPL, SMPL-X, MANO
  
 Added/integrated backends:
 
-- SUPR, integrated directly into the existing application flow.`Wrapper/SUPR_WRAPPER.py` is therefore retained as a placeholder.
-- STAR, integrated through a model-specific wrapper
-- ANNY, integrated through a model-specific wrapper
-- MHR, integrated through a model-specific wrapper
+- SUPR, STAR, ANNY and MHR, each through an adapter class in `body_models.py`
+  that shares one interface with the SMPL-family adapter
 
 The following videos demonstrate the original UI features. They do not necessarily show the additional STAR, ANNY, MHR, or SUPR integrations.
 
@@ -138,7 +136,7 @@ data
 Note for case-sensitive filesystems (Linux): SUPR loader in `main.py` currently uses lower-case names like `supr_male.npy`.
 If your filesystem is case-sensitive, keep filenames consistent with loader expectation.
 
-ANNY data used by `Wrapper/ANNY_WRAPPER.py` is loaded from the submodule path `anny/src/anny/data/`. Typical structure is:
+ANNY data is downloaded by the `anny` package on first use (to `~/.cache/anny`); no files are needed under `data/body_models`. Older checkouts used this layout:
 
 ```text
 data
@@ -152,7 +150,7 @@ data
       └── ...
 ```
 
-MHR assets used by `Wrapper/MHR_WRAPPER.py` are loaded from `mhr/assets/`. Typical files are:
+MHR assets used by `MHRWrapper` in `body_models.py` are loaded from `mhr/assets/`. Typical files are:
 
 ```text
 data
@@ -189,7 +187,7 @@ dict_keys(['betas', 'expression', 'gender', 'body_model',
 
 ### Model interface and checks
 
-All eight model types use `BodyModelWrapper`. `evaluate()` disables gradient
+All eight model types use `BodyModelWrapper` from `body_models.py`. `evaluate()` disables gradient
 tracking and returns `MeshData(vertices, joints, faces)` as NumPy arrays. Wrappers
 expose `joint_names`, `joint_parents` (root parent is `-1`), `parameter_names`,
 and `parameter_limits`. Parameter metadata is keyed by pose group; an absent
